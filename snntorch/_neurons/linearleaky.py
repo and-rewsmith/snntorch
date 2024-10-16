@@ -58,3 +58,7 @@ class LinearLeaky(LIF):
     @classmethod
     def reset_hidden(cls):
         pass
+
+
+if __name__ == "__main__":
+    print("success")
