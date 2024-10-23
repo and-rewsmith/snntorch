@@ -90,12 +90,11 @@ class LinearLeaky(LIF):
 
         # Pad the input tensor on both sides
         padded_input = F.pad(input_tensor, (padding, padding))
-        print(padded_input.shape)
-        print(input_tensor.shape)
-        print("-------------------")
+        # print(padded_input.shape)
+        # print(input_tensor.shape)
+        print("------input / kernel-------------")
         print(input_tensor)
         print(kernel_tensor)
-        print("-------------------")
 
         # Perform convolution with the padded input
         conv_result = F.conv1d(padded_input, kernel_tensor, groups=in_channels)
@@ -191,7 +190,9 @@ if __name__ == "__main__":
     print("channels: ", channels)
     print()
     input_ = torch.arange(1, timesteps * batch * channels + 1).float().view(timesteps, batch, channels).to(device)
-    # print(input_)
-    # print()
-    leaky_linear.forward(input_)
-    print("success")
+    print("--------input tensor-----------")
+    print(input_)
+    print()
+    out = leaky_linear.forward(input_)
+    print("--------output-----------")
+    print(out)
