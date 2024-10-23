@@ -103,7 +103,7 @@ class LinearLeaky(LIF):
 
         # Truncate the result to match the original input length
         truncated_result = conv_result[..., 0:num_steps]
-        
+
         return truncated_result
 
     # TODO: change beta to tau
@@ -124,26 +124,27 @@ class LinearLeaky(LIF):
         # print("decay filter:")
         # print(decay_filter.shape)
 
-        # INITIAL MEMBRANE DECAY:
-        initial_mem = torch.zeros_like(input_[0])
-        # print("initial mem:")
-        # print(initial_mem.shape)
-        initial_state_decay_over_time = decay_filter * initial_mem
-        # print("initial state decay over time:")
-        # print(initial_state_decay_over_time.shape)
-        assert initial_state_decay_over_time.shape == (batch, num_steps)
+        # # INITIAL MEMBRANE DECAY:
+        # initial_mem = torch.zeros_like(input_[0])
+        # # print("initial mem:")
+        # # print(initial_mem.shape)
+        # initial_state_decay_over_time = decay_filter * initial_mem # this is broken
+        # # print("initial state decay over time:")
+        # # print(initial_state_decay_over_time.shape)
+        # assert initial_state_decay_over_time.shape == (batch, num_steps)
 
         # INPUT CURRENT DECAY:
-        # print("input:")
         input_ = input_.permute(1, 2, 0)
         assert input_.shape == (batch, channels, num_steps)
-        # print(input_.shape)
-        # print("decay filter:")
-        # print(decay_filter.shape)
-        decay_filter = decay_filter.view(channels, 1, -1)
+        print("input:")
+        print(input_.shape)
+        print("decay filter:")
+        print(decay_filter.shape)
+        decay_filter = decay_filter.unsqueeze(0).unsqueeze(0).expand(channels, 1, num_steps)
         assert decay_filter.shape == (channels, 1, num_steps)
 
         conv_result = self.full_mode_conv1d_truncated(input_, decay_filter)
+        assert conv_result.shape == (batch, channels, num_steps)
 
         print("num steps:")
         print(num_steps)
@@ -193,5 +194,15 @@ class LinearLeaky(LIF):
 
 if __name__ == "__main__":
     leaky_linear = LinearLeaky(beta=0.9)
-    leaky_linear.forward_v2(torch.arange(1, 6).float().view(5, 1, 1))
+    timesteps = 10
+    batch = 2
+    channels = 1
+    print("timesteps: ", timesteps)
+    print("batch: ", batch)
+    print("channels: ", channels)
+    print()
+    input_ = torch.arange(1, timesteps * batch * channels + 1).float().view(timesteps, batch, channels)
+    print(input_)
+    print()
+    leaky_linear.forward_v2(input_)
     print("success")
