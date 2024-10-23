@@ -121,6 +121,15 @@ class LinearLeaky(LIF):
         time_steps = torch.arange(0, num_steps, device=input_.device)
         assert time_steps.shape == (num_steps,)
 
+        # # INITIAL MEMBRANE DECAY:
+        # initial_mem = torch.zeros_like(input_[0])
+        # # print("initial mem:")
+        # # print(initial_mem.shape)
+        # initial_state_decay_over_time = decay_filter * initial_mem # this is broken
+        # # print("initial state decay over time:")
+        # # print(initial_state_decay_over_time.shape)
+        # assert initial_state_decay_over_time.shape == (batch, num_steps)
+
         # init decay filter
         decay_filter = torch.exp(-time_steps / self.beta)
         assert decay_filter.shape == (num_steps,)
