@@ -107,69 +107,61 @@ class LinearLeaky(LIF):
         return truncated_result
 
     # TODO: change beta to tau
-    # beta = (1 - delta_t / tau), can probably set delta_t to "1"
-    # if tau > delta_t, then beta: (0, 1)
+    #
+    # Jason wrote:
+    #   beta = (1 - delta_t / tau), can probably set delta_t to "1"
+    #   if tau > delta_t, then beta: (0, 1)
     def forward_v2(self, input_, mem=None):
         # EQUATION:
-        # V_t = V_0 * exp(-t/tau) + SUM_s->t(I_s * exp(-(t-s)/tau)) ??? # not sure if correct
+        # V_t = V_0 * exp(-t/tau) + SUM_s->t(I_s * exp(-(t-s)/tau))
+        # first term doesn't exist in snntorch -- networks start from zero
 
-        # SETUP:
+        # init time steps arr
         num_steps, batch, channels = input_.shape
         time_steps = torch.arange(0, num_steps, device=input_.device)
         assert time_steps.shape == (num_steps,)
 
-        # DECAY FILTER WILL BE REUSED:
+        # init decay filter
         decay_filter = torch.exp(-time_steps / self.beta)
         assert decay_filter.shape == (num_steps,)
-        # print("decay filter:")
-        # print(decay_filter.shape)
 
-        # # INITIAL MEMBRANE DECAY:
-        # initial_mem = torch.zeros_like(input_[0])
-        # # print("initial mem:")
-        # # print(initial_mem.shape)
-        # initial_state_decay_over_time = decay_filter * initial_mem # this is broken
-        # # print("initial state decay over time:")
-        # # print(initial_state_decay_over_time.shape)
-        # assert initial_state_decay_over_time.shape == (batch, num_steps)
-
-        # INPUT CURRENT DECAY:
+        # prepare for convolution
         input_ = input_.permute(1, 2, 0)
         assert input_.shape == (batch, channels, num_steps)
-        print("input:")
-        print(input_.shape)
-        print("decay filter:")
-        print(decay_filter.shape)
+        # print("input:")
+        # print(input_.shape)
+        # print("decay filter:")
+        # print(decay_filter.shape)
         decay_filter = decay_filter.unsqueeze(0).unsqueeze(0).expand(channels, 1, num_steps)
         assert decay_filter.shape == (channels, 1, num_steps)
 
+        # perform convolution
         conv_result = self.full_mode_conv1d_truncated(input_, decay_filter)
         assert conv_result.shape == (batch, channels, num_steps)
 
-        print("num steps:")
-        print(num_steps)
-        print("conv result:")
-        print(conv_result.shape)
-        print(conv_result)
+        # print("num steps:")
+        # print(num_steps)
+        # print("conv result:")
+        # print(conv_result.shape)
+        # print(conv_result)
 
-        # input_decay_over_time = F.conv1d(input_, decay_filter, stride=1, padding=0)
         return conv_result
 
-    def forward(self, input_, mem=None):
+    # def forward(self, input_, mem=None):
 
-        num_steps, batch, channels = input_.shape
+    #     num_steps, batch, channels = input_.shape
 
-        time_steps = torch.arange(0, num_steps, device=input_.device)
-        assert time_steps.shape == (num_steps,)
+    #     time_steps = torch.arange(0, num_steps, device=input_.device)
+    #     assert time_steps.shape == (num_steps,)
 
-        # time x batch x channels....
-        # time x time x batch x channels // TO-DO: change self.beta
-        # TO-DO: add time-step offset as well.
-        mem_response = input_ * torch.exp(-time_steps / self.beta)
-        assert mem_response.shape == (num_steps, num_steps, batch, channels)
+    #     # time x batch x channels....
+    #     # time x time x batch x channels // TO-DO: change self.beta
+    #     # TO-DO: add time-step offset as well.
+    #     mem_response = input_ * torch.exp(-time_steps / self.beta)
+    #     assert mem_response.shape == (num_steps, num_steps, batch, channels)
 
-        mem = mem_response.sum()
-        pass
+    #     mem = mem_response.sum()
+    #     pass
 
     def _base_state_function(self, input_):
         pass
