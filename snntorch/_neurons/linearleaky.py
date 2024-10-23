@@ -90,16 +90,16 @@ class LinearLeaky(LIF):
 
         # Pad the input tensor on both sides
         padded_input = F.pad(input_tensor, (padding, padding))
-        print(padded_input.shape)
-        print(input_tensor.shape)
-        print("-------------------")
-        print(input_tensor)
-        print(kernel_tensor)
-        print("-------------------")
+        # print(padded_input.shape)
+        # print(input_tensor.shape)
+        # print("-------------------")
+        # print(input_tensor)
+        # print(kernel_tensor)
+        # print("-------------------")
 
         # Perform convolution with the padded input
         conv_result = F.conv1d(padded_input, kernel_tensor, groups=in_channels)
-        print(conv_result)
+        # print(conv_result)
 
         # Truncate the result to match the original input length
         truncated_result = conv_result[..., 0:num_steps]
@@ -111,7 +111,7 @@ class LinearLeaky(LIF):
     # Jason wrote:
     #   beta = (1 - delta_t / tau), can probably set delta_t to "1"
     #   if tau > delta_t, then beta: (0, 1)
-    def forward_v2(self, input_, mem=None):
+    def forward(self, input_, mem=None):
         # EQUATION:
         # V_t = V_0 * exp(-t/tau) + SUM_s->t(I_s * exp(-(t-s)/tau))
         # first term doesn't exist in snntorch -- networks start from zero
@@ -147,22 +147,6 @@ class LinearLeaky(LIF):
 
         return conv_result
 
-    # def forward(self, input_, mem=None):
-
-    #     num_steps, batch, channels = input_.shape
-
-    #     time_steps = torch.arange(0, num_steps, device=input_.device)
-    #     assert time_steps.shape == (num_steps,)
-
-    #     # time x batch x channels....
-    #     # time x time x batch x channels // TO-DO: change self.beta
-    #     # TO-DO: add time-step offset as well.
-    #     mem_response = input_ * torch.exp(-time_steps / self.beta)
-    #     assert mem_response.shape == (num_steps, num_steps, batch, channels)
-
-    #     mem = mem_response.sum()
-    #     pass
-
     def _base_state_function(self, input_):
         pass
 
@@ -194,7 +178,7 @@ if __name__ == "__main__":
     print("channels: ", channels)
     print()
     input_ = torch.arange(1, timesteps * batch * channels + 1).float().view(timesteps, batch, channels)
-    print(input_)
-    print()
-    leaky_linear.forward_v2(input_)
+    # print(input_)
+    # print()
+    leaky_linear.forward(input_)
     print("success")
