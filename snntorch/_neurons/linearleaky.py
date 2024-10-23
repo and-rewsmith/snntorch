@@ -90,12 +90,12 @@ class LinearLeaky(LIF):
 
         # Pad the input tensor on both sides
         padded_input = F.pad(input_tensor, (padding, padding))
-        # print(padded_input.shape)
-        # print(input_tensor.shape)
-        # print("-------------------")
-        # print(input_tensor)
-        # print(kernel_tensor)
-        # print("-------------------")
+        print(padded_input.shape)
+        print(input_tensor.shape)
+        print("-------------------")
+        print(input_tensor)
+        print(kernel_tensor)
+        print("-------------------")
 
         # Perform convolution with the padded input
         conv_result = F.conv1d(padded_input, kernel_tensor, groups=in_channels)
@@ -111,6 +111,9 @@ class LinearLeaky(LIF):
     # Jason wrote:
     #   beta = (1 - delta_t / tau), can probably set delta_t to "1"
     #   if tau > delta_t, then beta: (0, 1)
+    from profilehooks import profile
+
+    # @profile(stdout=True, filename='baseline.prof')
     def forward(self, input_, mem=None):
         # EQUATION:
         # V_t = V_0 * exp(-t/tau) + SUM_s->t(I_s * exp(-(t-s)/tau))
@@ -131,7 +134,7 @@ class LinearLeaky(LIF):
         # assert initial_state_decay_over_time.shape == (batch, num_steps)
 
         # init decay filter
-        decay_filter = torch.exp(-time_steps / self.beta)
+        decay_filter = torch.exp(-time_steps / self.beta).to(input_.device)
         assert decay_filter.shape == (num_steps,)
 
         # prepare for convolution
@@ -178,15 +181,16 @@ class LinearLeaky(LIF):
 
 
 if __name__ == "__main__":
-    leaky_linear = LinearLeaky(beta=0.9)
-    timesteps = 10
-    batch = 2
+    device = "cuda"
+    leaky_linear = LinearLeaky(beta=0.9).to(device)
+    timesteps = 5
+    batch = 1
     channels = 1
     print("timesteps: ", timesteps)
     print("batch: ", batch)
     print("channels: ", channels)
     print()
-    input_ = torch.arange(1, timesteps * batch * channels + 1).float().view(timesteps, batch, channels)
+    input_ = torch.arange(1, timesteps * batch * channels + 1).float().view(timesteps, batch, channels).to(device)
     # print(input_)
     # print()
     leaky_linear.forward(input_)
