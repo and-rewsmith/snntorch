@@ -98,7 +98,6 @@ class LinearLeaky(LIF):
         # prepare for convolution
         input_ = input_.permute(1, 2, 0)
         assert input_.shape == (batch, channels, num_steps)
-        # decay_filter = decay_filter.unsqueeze(0).unsqueeze(0).expand(channels, 1, num_steps)
         decay_filter = decay_filter.permute(1, 0).unsqueeze(1)
         assert decay_filter.shape == (channels, 1, num_steps)
 

@@ -129,11 +129,6 @@ def test_forward_method_correctness_multiple_batches_single_channel_multi_beta(
         [[3.3292, 4.0001]],
         [[6.0959, 6.0002]]], device=input_tensor_single_batch_multiple_channel.device)
 
-    # print(input_tensor_single_batch_multiple_channel)
-    # print(input_tensor_single_batch_multiple_channel.shape)    
-    # print(output)
-    # print(expected_output)
-
     # Check that the output matches the expected output
     assert torch.allclose(output, expected_output,
                           atol=1e-4), "The forward method does not produce the expected output for multiple batches, single channel."
