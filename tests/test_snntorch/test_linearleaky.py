@@ -14,6 +14,10 @@ def linear_leaky_instance(device):
     # Fixture to initialize the LinearLeaky instance
     return LinearLeaky(beta=0.9).to(device)
 
+@pytest.fixture(scope="module")
+def linear_leaky_instance_multi_beta(device):
+    # Fixture to initialize the LinearLeaky instance
+    return LinearLeaky(beta=torch.tensor([0.9, 0.1])).to(device)
 
 @pytest.fixture(scope="module")
 def input_tensor_single_batch_single_channel(device):
@@ -24,16 +28,14 @@ def input_tensor_single_batch_single_channel(device):
     input_ = torch.arange(1, timesteps * batch * channels + 1).float().view(timesteps, batch, channels).to(device)
     return input_
 
-
 @pytest.fixture(scope="module")
-def input_tensor_batch_multiple_channels(device):
-    # Fixture for multiple batch and channels
+def input_tensor_single_batch_multiple_channel(device):
+    # Fixture to create a sample input tensor for single batch, single channel
     timesteps = 3
-    batch = 2  # Batch size of 2
-    channels = 4  # 3 Channels
+    batch = 1
+    channels = 2
     input_ = torch.arange(1, timesteps * batch * channels + 1).float().view(timesteps, batch, channels).to(device)
     return input_
-
 
 @pytest.fixture(scope="module")
 def input_tensor_multiple_batches_single_channel(device):
@@ -45,28 +47,33 @@ def input_tensor_multiple_batches_single_channel(device):
     return input_
 
 
+@pytest.fixture(scope="module")
+def input_tensor_batch_multiple(device):
+    # Fixture for multiple batch and channels
+    timesteps = 3
+    batch = 2  # Batch size of 2
+    channels = 4  # 3 Channels
+    input_ = torch.arange(1, timesteps * batch * channels + 1).float().view(timesteps, batch, channels).to(device)
+    return input_
+
+
 def test_forward_method_correctness_single_batch_single_channel(
         linear_leaky_instance, input_tensor_single_batch_single_channel):
-    # Test the forward method of LinearLeaky with single batch and single channel
     output = linear_leaky_instance.forward(input_tensor_single_batch_single_channel)
 
-    # Expected output based on the given input and beta=0.9
     expected_output = torch.tensor(
         [[[1.0000]], [[2.3292]], [[3.7668]], [[5.2400]], [[6.7250]]],
         device=input_tensor_single_batch_single_channel.device)
 
-    # Check that the output matches the expected output
     assert torch.allclose(output, expected_output,
                           atol=1e-4), "The forward method does not produce the expected output for single batch, single channel."
 
 
 def test_forward_method_correctness_multiple_batches_multiple_channels(
-    linear_leaky_instance, input_tensor_batch_multiple_channels
+    linear_leaky_instance, input_tensor_batch_multiple
 ):
-    # Test the forward method of LinearLeaky with multiple batches and multiple channels
-    output = linear_leaky_instance.forward(input_tensor_batch_multiple_channels)
+    output = linear_leaky_instance.forward(input_tensor_batch_multiple)
 
-    # Expected output based on the input and beta=0.9 for each batch and each channel
     expected_output = torch.tensor([
         [[ 1.0000,  2.0000,  3.0000,  4.0000],
          [ 5.0000,  6.0000,  7.0000,  8.0000]],
@@ -76,10 +83,9 @@ def test_forward_method_correctness_multiple_batches_multiple_channels(
 
         [[20.0711, 21.5087, 22.9462, 24.3838],
          [25.8214, 27.2589, 28.6965, 30.1340]]],
-        device=input_tensor_batch_multiple_channels.device
+        device=input_tensor_batch_multiple.device
     )
 
-    # Check that the output matches the expected output
     assert torch.allclose(output, expected_output, atol=1e-4), (
         "The forward method does not produce the expected output for multiple batches, multiple channels."
     )
@@ -87,7 +93,6 @@ def test_forward_method_correctness_multiple_batches_multiple_channels(
 
 def test_forward_method_correctness_multiple_batches_single_channel(
         linear_leaky_instance, input_tensor_multiple_batches_single_channel):
-    # Test the forward method of LinearLeaky with multiple batches but single channel
     output = linear_leaky_instance.forward(input_tensor_multiple_batches_single_channel)
 
     expected_output = torch.tensor([[
@@ -110,6 +115,24 @@ def test_forward_method_correctness_multiple_batches_single_channel(
         [[17.2049],
          [18.6899],
          [20.1749]]], device=input_tensor_multiple_batches_single_channel.device)
+
+    # Check that the output matches the expected output
+    assert torch.allclose(output, expected_output,
+                          atol=1e-4), "The forward method does not produce the expected output for multiple batches, single channel."
+
+def test_forward_method_correctness_multiple_batches_single_channel_multi_beta(
+        linear_leaky_instance_multi_beta, input_tensor_single_batch_multiple_channel):
+    output = linear_leaky_instance_multi_beta.forward(input_tensor_single_batch_multiple_channel)
+
+    expected_output = torch.tensor([
+        [[1.0000, 2.0000]],
+        [[3.3292, 4.0001]],
+        [[6.0959, 6.0002]]], device=input_tensor_single_batch_multiple_channel.device)
+
+    # print(input_tensor_single_batch_multiple_channel)
+    # print(input_tensor_single_batch_multiple_channel.shape)    
+    # print(output)
+    # print(expected_output)
 
     # Check that the output matches the expected output
     assert torch.allclose(output, expected_output,

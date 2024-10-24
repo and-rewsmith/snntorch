@@ -18,6 +18,12 @@ def full_mode_conv1d_truncated(input_tensor, kernel_tensor):
     padding = kernel_size - 1
     padded_input = F.pad(input_tensor, (padding, padding))
 
+    # print(padded_input.shape)
+    # print(input_tensor.shape)
+    # print("------input / kernel-------------")
+    # print(input_tensor)
+    # print(kernel_tensor)
+
     # perform convolution with the padded input
     conv_result = F.conv1d(padded_input, kernel_tensor, groups=in_channels)
 
@@ -29,6 +35,10 @@ def full_mode_conv1d_truncated(input_tensor, kernel_tensor):
 class LinearLeaky(LIF):
     """
     TODO: write some docstring similar to SNN.Leaky
+
+     Jason wrote:
+-      beta = (1 - delta_t / tau), can probably set delta_t to "1"
+-      if tau > delta_t, then beta: (0, 1)
     """
 
     def __init__(
@@ -118,20 +128,20 @@ class LinearLeaky(LIF):
         pass
 
 
-# if __name__ == "__main__":
-#     device = "cuda"
-#     leaky_linear = LinearLeaky(beta=0.9).to(device)
-#     timesteps = 5
-#     batch = 1
-#     channels = 1
-#     print("timesteps: ", timesteps)
-#     print("batch: ", batch)
-#     print("channels: ", channels)
-#     print()
-#     input_ = torch.arange(1, timesteps * batch * channels + 1).float().view(timesteps, batch, channels).to(device)
-#     print("--------input tensor-----------")
-#     print(input_)
-#     print()
-#     out = leaky_linear.forward(input_)
-#     print("--------output-----------")
-#     print(out)
+if __name__ == "__main__":
+    device = "cuda"
+    leaky_linear = LinearLeaky(beta=0.9).to(device)
+    timesteps = 5
+    batch = 1
+    channels = 1
+    print("timesteps: ", timesteps)
+    print("batch: ", batch)
+    print("channels: ", channels)
+    print()
+    input_ = torch.arange(1, timesteps * batch * channels + 1).float().view(timesteps, batch, channels).to(device)
+    print("--------input tensor-----------")
+    print(input_)
+    print()
+    out = leaky_linear.forward(input_)
+    print("--------output-----------")
+    print(out)
