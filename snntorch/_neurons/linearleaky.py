@@ -92,9 +92,9 @@ class LinearLeaky(LIF):
         padded_input = F.pad(input_tensor, (padding, padding))
         # print(padded_input.shape)
         # print(input_tensor.shape)
-        print("------input / kernel-------------")
-        print(input_tensor)
-        print(kernel_tensor)
+        # print("------input / kernel-------------")
+        # print(input_tensor)
+        # print(kernel_tensor)
 
         # Perform convolution with the padded input
         conv_result = F.conv1d(padded_input, kernel_tensor, groups=in_channels)
@@ -156,7 +156,7 @@ class LinearLeaky(LIF):
         # print(conv_result.shape)
         # print(conv_result)
 
-        return conv_result
+        return conv_result.permute(2, 0, 1)
 
     def _base_state_function(self, input_):
         pass
