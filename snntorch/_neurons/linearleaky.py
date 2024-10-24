@@ -79,15 +79,17 @@ class LinearLeaky(LIF):
         num_steps, batch, channels = input_.shape
         time_steps = torch.arange(0, num_steps, device=input_.device)
         assert time_steps.shape == (num_steps,)
+        time_steps = time_steps.unsqueeze(1).expand(num_steps, channels)
 
         # init decay filter
         decay_filter = torch.exp(-time_steps / self.beta).to(input_.device)
-        assert decay_filter.shape == (num_steps,)
+        assert decay_filter.shape == (num_steps, channels)
 
         # prepare for convolution
         input_ = input_.permute(1, 2, 0)
         assert input_.shape == (batch, channels, num_steps)
-        decay_filter = decay_filter.unsqueeze(0).unsqueeze(0).expand(channels, 1, num_steps)
+        # decay_filter = decay_filter.unsqueeze(0).unsqueeze(0).expand(channels, 1, num_steps)
+        decay_filter = decay_filter.permute(1, 0).unsqueeze(1)
         assert decay_filter.shape == (channels, 1, num_steps)
 
         conv_result = full_mode_conv1d_truncated(input_, decay_filter)
