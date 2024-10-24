@@ -5,6 +5,26 @@ from profilehooks import profile
 
 from .neurons import LIF
 
+def full_mode_conv1d_truncated(input_tensor, kernel_tensor):
+    # input_tensor: (batch, channels, num_steps)
+    # kernel_tensor: (channels, 1, kernel_size)
+    kernel_tensor = torch.flip(kernel_tensor, dims=[-1])
+
+    # get dimensions
+    batch_size, in_channels, num_steps = input_tensor.shape
+    out_channels, _, kernel_size = kernel_tensor.shape
+
+    # pad the input tensor on both sides
+    padding = kernel_size - 1
+    padded_input = F.pad(input_tensor, (padding, padding))
+
+    # perform convolution with the padded input
+    conv_result = F.conv1d(padded_input, kernel_tensor, groups=in_channels)
+
+    # truncate the result to match the original input length
+    truncated_result = conv_result[..., 0:num_steps]
+
+    return truncated_result
 
 class LinearLeaky(LIF):
     """
@@ -53,29 +73,6 @@ class LinearLeaky(LIF):
     def init_leaky(self):
         pass
 
-    def full_mode_conv1d_truncated(self, input_tensor, kernel_tensor):
-        # input_tensor: (batch, channels, num_steps)
-        # kernel_tensor: (channels, 1, kernel_size)
-        kernel_tensor = torch.flip(kernel_tensor, dims=[-1])
-
-        # Get dimensions
-        batch_size, in_channels, num_steps = input_tensor.shape
-        out_channels, _, kernel_size = kernel_tensor.shape
-
-        # Calculate padding for 'full' mode
-        padding = kernel_size - 1
-
-        # Pad the input tensor on both sides
-        padded_input = F.pad(input_tensor, (padding, padding))
-
-        # Perform convolution with the padded input
-        conv_result = F.conv1d(padded_input, kernel_tensor, groups=in_channels)
-
-        # Truncate the result to match the original input length
-        truncated_result = conv_result[..., 0:num_steps]
-
-        return truncated_result
-
     # @profile(skip=True, stdout=True, filename='baseline.prof')
     def forward(self, input_, mem=None):
         # init time steps arr
@@ -93,7 +90,7 @@ class LinearLeaky(LIF):
         decay_filter = decay_filter.unsqueeze(0).unsqueeze(0).expand(channels, 1, num_steps)
         assert decay_filter.shape == (channels, 1, num_steps)
 
-        conv_result = self.full_mode_conv1d_truncated(input_, decay_filter)
+        conv_result = full_mode_conv1d_truncated(input_, decay_filter)
         assert conv_result.shape == (batch, channels, num_steps)
 
         return conv_result.permute(2, 0, 1)
