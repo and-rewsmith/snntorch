@@ -140,12 +140,9 @@ def test_forward_method_correctness_multiple_batches_single_channel(
 
 def test_forward_method_correctness_single_batch_multiple_channel(
         linear_leaky_instance_multi_beta, input_tensor_single_batch_multiple_channel):
-    print(input_tensor_single_batch_multiple_channel.shape)
     output = linear_leaky_instance_multi_beta.forward(input_tensor_single_batch_multiple_channel)
 
     assert input_tensor_single_batch_multiple_channel.shape == output.shape
-
-    print("input_tensor_batch_multiple: ", input_tensor_single_batch_multiple_channel)
 
     # Ensure all input elements are <= 1
     assert (input_tensor_single_batch_multiple_channel <= 1).all().item(), \
