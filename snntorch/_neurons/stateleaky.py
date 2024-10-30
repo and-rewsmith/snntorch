@@ -3,10 +3,37 @@ from torch import nn
 from torch.nn import functional as F
 from profilehooks import profile
 
-# from .neurons import LIF
-from .stateleaky import StateLeaky
+from .neurons import LIF
+# from .linearleaky import LinearLeaky
 
-class LinearLeaky(StateLeaky):
+def full_mode_conv1d_truncated(input_tensor, kernel_tensor):
+    # input_tensor: (batch, channels, num_steps)
+    # kernel_tensor: (channels, 1, kernel_size)
+    kernel_tensor = torch.flip(kernel_tensor, dims=[-1])
+
+    # get dimensions
+    batch_size, in_channels, num_steps = input_tensor.shape
+    out_channels, _, kernel_size = kernel_tensor.shape
+
+    # pad the input tensor on both sides
+    padding = kernel_size - 1
+    padded_input = F.pad(input_tensor, (padding, padding))
+
+    # print(padded_input.shape)
+    # print(input_tensor.shape)
+    # print("------input / kernel-------------")
+    # print(input_tensor)
+    # print(kernel_tensor)
+
+    # perform convolution with the padded input
+    conv_result = F.conv1d(padded_input, kernel_tensor, groups=in_channels)
+
+    # truncate the result to match the original input length
+    truncated_result = conv_result[..., 0:num_steps]
+
+    return truncated_result
+
+class StateLeaky(LIF):
     """
     TODO: write some docstring similar to SNN.Leaky
 
@@ -18,11 +45,6 @@ class LinearLeaky(StateLeaky):
     def __init__(
         self,
         beta,
-        in_features, 
-        out_features,
-        bias=True, 
-        device=None, 
-        dtype=None,
         threshold=1.0,
         spike_grad=None,
         surrogate_disable=False,
@@ -47,10 +69,6 @@ class LinearLeaky(StateLeaky):
         )
 
         self._tau_buffer(self.beta, learn_beta)
-        self.linear = nn.Linear(in_features=in_features, out_features=out_features,
-                                device=device, dtype=dtype, bias=bias)
-        self.linear = nn.Linear(in_features=in_features, out_features=out_features,
-                                device=device, dtype=dtype, bias=bias)
 
     @property
     def beta(self): 
@@ -58,8 +76,6 @@ class LinearLeaky(StateLeaky):
 
     # @profile(skip=True, stdout=True, filename='baseline.prof')
     def forward(self, input_):
-
-        input_ = self.linear(input_.reshape(-1, self.linear.in_features))  # TODO: input_ must be transformed T x B x C --> (T*B) x C
         self.mem = self._base_state_function(input_)
 
         if self.state_quant:
@@ -81,6 +97,9 @@ class LinearLeaky(StateLeaky):
 
         # init decay filter
         decay_filter = torch.exp(-time_steps / self.tau).to(input_.device)
+        print("------------decay filter------------")
+        print(decay_filter)
+        print()
         assert decay_filter.shape == (num_steps, channels)
 
         # prepare for convolution
@@ -98,7 +117,7 @@ class LinearLeaky(StateLeaky):
         if not isinstance(beta, torch.Tensor):
             beta = torch.as_tensor(beta)
         
-        tau = 1 / (1 - beta)
+        tau = 1 / (1 - beta + 1e-12)
 
         if learn_beta:
             self.tau = nn.Parameter(tau)
@@ -110,3 +129,20 @@ class LinearLeaky(StateLeaky):
 # mem_reset, init, detach, zeros, reset_mem, init_leaky
 # detach_hidden, reset_hidden
 
+if __name__ == "__main__":
+    device = "cuda"
+    leaky_linear = LinearLeaky(beta=0.9).to(device)
+    timesteps = 5
+    batch = 1
+    channels = 1
+    print("timesteps: ", timesteps)
+    print("batch: ", batch)
+    print("channels: ", channels)
+    print()
+    input_ = torch.arange(1, timesteps * batch * channels + 1).float().view(timesteps, batch, channels).to(device)
+    print("--------input tensor-----------")
+    print(input_)
+    print()
+    out = leaky_linear.forward(input_)
+    print("--------output-----------")
+    print(out)
