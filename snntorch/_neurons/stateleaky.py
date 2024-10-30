@@ -6,32 +6,6 @@ from profilehooks import profile
 from .neurons import LIF
 # from .linearleaky import LinearLeaky
 
-def full_mode_conv1d_truncated(input_tensor, kernel_tensor):
-    # input_tensor: (batch, channels, num_steps)
-    # kernel_tensor: (channels, 1, kernel_size)
-    kernel_tensor = torch.flip(kernel_tensor, dims=[-1])
-
-    # get dimensions
-    batch_size, in_channels, num_steps = input_tensor.shape
-    out_channels, _, kernel_size = kernel_tensor.shape
-
-    # pad the input tensor on both sides
-    padding = kernel_size - 1
-    padded_input = F.pad(input_tensor, (padding, padding))
-
-    # print(padded_input.shape)
-    # print(input_tensor.shape)
-    # print("------input / kernel-------------")
-    # print(input_tensor)
-    # print(kernel_tensor)
-
-    # perform convolution with the padded input
-    conv_result = F.conv1d(padded_input, kernel_tensor, groups=in_channels)
-
-    # truncate the result to match the original input length
-    truncated_result = conv_result[..., 0:num_steps]
-
-    return truncated_result
 
 class StateLeaky(LIF):
     """
@@ -76,6 +50,7 @@ class StateLeaky(LIF):
 
     # @profile(skip=True, stdout=True, filename='baseline.prof')
     def forward(self, input_):
+        print(input_.shape)
         self.mem = self._base_state_function(input_)
 
         if self.state_quant:
@@ -96,6 +71,8 @@ class StateLeaky(LIF):
         time_steps = time_steps.unsqueeze(1).expand(num_steps, channels)
 
         # init decay filter
+        print(time_steps.shape)
+        print(self.tau.shape)
         decay_filter = torch.exp(-time_steps / self.tau).to(input_.device)
         print("------------decay filter------------")
         print(decay_filter)
@@ -108,7 +85,7 @@ class StateLeaky(LIF):
         decay_filter = decay_filter.permute(1, 0).unsqueeze(1)
         assert decay_filter.shape == (channels, 1, num_steps)
 
-        conv_result = full_mode_conv1d_truncated(input_, decay_filter)
+        conv_result = self.full_mode_conv1d_truncated(input_, decay_filter)
         assert conv_result.shape == (batch, channels, num_steps)
 
         return conv_result.permute(2, 0, 1)  # return membrane potential trace
@@ -123,6 +100,33 @@ class StateLeaky(LIF):
             self.tau = nn.Parameter(tau)
         else:
             self.register_buffer("tau", tau)
+    
+    def full_mode_conv1d_truncated(self, input_tensor, kernel_tensor):
+        # input_tensor: (batch, channels, num_steps)
+        # kernel_tensor: (channels, 1, kernel_size)
+        kernel_tensor = torch.flip(kernel_tensor, dims=[-1])
+
+        # get dimensions
+        batch_size, in_channels, num_steps = input_tensor.shape
+        out_channels, _, kernel_size = kernel_tensor.shape
+
+        # pad the input tensor on both sides
+        padding = kernel_size - 1
+        padded_input = F.pad(input_tensor, (padding, padding))
+
+        # print(padded_input.shape)
+        # print(input_tensor.shape)
+        # print("------input / kernel-------------")
+        # print(input_tensor)
+        # print(kernel_tensor)
+
+        # perform convolution with the padded input
+        conv_result = F.conv1d(padded_input, kernel_tensor, groups=in_channels)
+
+        # truncate the result to match the original input length
+        truncated_result = conv_result[..., 0:num_steps]
+
+        return truncated_result
 
 # TODO: throw exceptions if calling subclass methods we don't want to use
 # fire_inhibition
@@ -131,7 +135,7 @@ class StateLeaky(LIF):
 
 if __name__ == "__main__":
     device = "cuda"
-    leaky_linear = LinearLeaky(beta=0.9).to(device)
+    leaky_linear = StateLeaky(beta=0.9).to(device)
     timesteps = 5
     batch = 1
     channels = 1

@@ -6,7 +6,7 @@ from profilehooks import profile
 # from .neurons import LIF
 from .stateleaky import StateLeaky
 
-class LinearLeaky(StateLeaky):
+class Conv2dLeaky(StateLeaky):
     """
     TODO: write some docstring similar to SNN.Leaky
 
@@ -18,9 +18,15 @@ class LinearLeaky(StateLeaky):
     def __init__(
         self,
         beta,
-        in_features, 
-        out_features,
-        bias=True, 
+        in_channels, 
+        out_channels,
+        kernel_size,
+        stride=1,
+        padding=0,
+        dilation=1,
+        groups=1,
+        bias=True,
+        padding_mode='zeros',
         device=None, 
         dtype=None,
         threshold=1.0,
@@ -46,7 +52,10 @@ class LinearLeaky(StateLeaky):
             learn_graded_spikes_factor=learn_graded_spikes_factor,
         )
 
-        self.linear = nn.Linear(in_features=in_features, out_features=out_features,
+        self.conv2d = nn.Conv2d(in_channels=in_channels, out_channels=out_channels,
+                                kernel_size=kernel_size, stride=stride,
+                                padding=padding, dilation=dilation,
+                                groups=groups, padding_mode=padding_mode,
                                 device=device, dtype=dtype, bias=bias)
 
     @property
@@ -56,7 +65,8 @@ class LinearLeaky(StateLeaky):
     # @profile(skip=True, stdout=True, filename='baseline.prof')
     def forward(self, input_):
 
-        input_ = self.linear(input_.reshape(-1, self.linear.in_features))  # TODO: input_ must be transformed T x B x C --> (T*B) x C
+        # not checked logic of function below
+        input_ = self.conv2d(input_.reshape(input_.size(0) * input_.size(1), *input_.shape[2:]))  # TODO: input_ must be transformed T x B x C --> (T*B) x C
         self.mem = self._base_state_function(input_)
 
         if self.state_quant:
@@ -68,10 +78,4 @@ class LinearLeaky(StateLeaky):
 
         else:
             return self.mem
-
-
-# TODO: throw exceptions if calling subclass methods we don't want to use
-# fire_inhibition
-# mem_reset, init, detach, zeros, reset_mem, init_leaky
-# detach_hidden, reset_hidden
 
