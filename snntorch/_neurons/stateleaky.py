@@ -19,6 +19,7 @@ class StateLeaky(LIF):
     def __init__(
         self,
         beta,
+        channels,
         threshold=1.0,
         spike_grad=None,
         surrogate_disable=False,
@@ -42,7 +43,7 @@ class StateLeaky(LIF):
             learn_graded_spikes_factor=learn_graded_spikes_factor,
         )
 
-        self._tau_buffer(self.beta, learn_beta)
+        self._tau_buffer(self.beta, learn_beta, channels)
 
     @property
     def beta(self):
@@ -69,9 +70,13 @@ class StateLeaky(LIF):
         assert time_steps.shape == (num_steps,)
         time_steps = time_steps.unsqueeze(1).expand(num_steps, channels)
 
+        assert time_steps.shape == (num_steps, channels)
+        assert self.tau.shape == (channels,)
+
         # init decay filter
         # print(time_steps.shape)
         # print(self.tau.shape)
+
         decay_filter = torch.exp(-time_steps / self.tau).to(input_.device)
         # print("------------decay filter------------")
         # print(decay_filter)
@@ -89,11 +94,13 @@ class StateLeaky(LIF):
 
         return conv_result.permute(2, 0, 1)  # return membrane potential trace
 
-    def _tau_buffer(self, beta, learn_beta):
-        if not isinstance(beta, torch.Tensor):
-            beta = torch.as_tensor(beta)
+    def _tau_buffer(self, beta, learn_beta, channels):
+        # if not isinstance(beta, torch.Tensor):
+        #     beta = torch.as_tensor(beta)
 
-        tau = 1 / (1 - beta + 1e-12)
+        channels_beta = beta * torch.ones(channels)
+
+        tau = 1 / (1 - channels_beta + 1e-12)
 
         if learn_beta:
             self.tau = nn.Parameter(tau)
