@@ -71,13 +71,15 @@ class StateLeaky(LIF):
         time_steps = time_steps.unsqueeze(1).expand(num_steps, channels)
 
         assert time_steps.shape == (num_steps, channels)
-        assert self.tau.shape == (channels,)
+
+        converted_tau = self.tau if self.tau.shape == (channels,) else self.tau.expand(channels)
+        assert converted_tau.shape == (channels,)
 
         # init decay filter
         # print(time_steps.shape)
         # print(self.tau.shape)
 
-        decay_filter = torch.exp(-time_steps / self.tau).to(input_.device)
+        decay_filter = torch.exp(-time_steps / converted_tau).to(input_.device)
         # print("------------decay filter------------")
         # print(decay_filter)
         # print()
@@ -95,12 +97,13 @@ class StateLeaky(LIF):
         return conv_result.permute(2, 0, 1)  # return membrane potential trace
 
     def _tau_buffer(self, beta, learn_beta, channels):
-        # if not isinstance(beta, torch.Tensor):
-        #     beta = torch.as_tensor(beta)
+        if not isinstance(beta, torch.Tensor):
+            beta = torch.as_tensor(beta)
 
-        channels_beta = beta * torch.ones(channels)
+        if beta.shape != (channels,) and beta.shape != ():
+            raise ValueError(f"Beta shape {beta.shape} must be either ({channels},) or (1,)")
 
-        tau = 1 / (1 - channels_beta + 1e-12)
+        tau = 1 / (1 - beta + 1e-12)
 
         if learn_beta:
             self.tau = nn.Parameter(tau)
