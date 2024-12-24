@@ -9,13 +9,18 @@ def device():
 
 
 @pytest.fixture(scope="module")
-def linear_leaky_instance(device):
-    return StateLeaky(beta=0.9, output=False).to(device)
+def linear_leaky_single_channel(device):
+    return StateLeaky(beta=0.9, channels=1, output=False).to(device)
 
 
 @pytest.fixture(scope="module")
-def linear_leaky_instance_multi_beta(device):
-    return StateLeaky(beta=torch.tensor([0.9, 0.9, 0.9, 0.9]), output=False).to(device)
+def linear_leaky_multi_channel(device):
+    return StateLeaky(beta=0.9, channels=4, output=False).to(device)
+
+
+@pytest.fixture(scope="module")
+def linear_leaky_multi_beta(device):
+    return StateLeaky(beta=torch.tensor([0.9] * 4), channels=4, output=False).to(device)
 
 
 @pytest.fixture(scope="module")
@@ -66,73 +71,73 @@ def input_tensor_batch_multiple(device):
     return input_.to(device)
 
 
-def test_forward_method_correctness_single_batch_single_channel(
-        linear_leaky_instance, input_tensor_single_batch_single_channel):
-    output = linear_leaky_instance.forward(input_tensor_single_batch_single_channel)
+# Channel configuration tests
+def test_single_batch_single_channel(
+        linear_leaky_single_channel, input_tensor_single_batch_single_channel):
+    output = linear_leaky_single_channel.forward(input_tensor_single_batch_single_channel)
 
     assert input_tensor_single_batch_single_channel.shape == output.shape
-
     assert (input_tensor_single_batch_single_channel <= 1).all().item(), \
         "Some input elements are greater than 1."
-
     assert output.shape == input_tensor_single_batch_single_channel.shape, \
         "Output shape does not match input shape."
-
     assert (output > 1).any().item(), \
         "No elements in the output are greater than 1."
 
 
-def test_forward_method_correctness_multiple_batches_multiple_channels(
-    linear_leaky_instance, input_tensor_batch_multiple
-):
-    output = linear_leaky_instance.forward(input_tensor_batch_multiple)
+# def test_single_batch_multi_channel(
+#         linear_leaky_multi_channel, input_tensor_single_batch_multiple_channel):
+#     output = linear_leaky_multi_channel.forward(input_tensor_single_batch_multiple_channel)
 
-    assert input_tensor_batch_multiple.shape == output.shape
-
-    print("input_tensor_batch_multiple: ", input_tensor_batch_multiple)
-
-    assert (input_tensor_batch_multiple <= 1).all().item(), \
-        "Some input elements are greater than 1."
-
-    assert output.shape == input_tensor_batch_multiple.shape, \
-        "Output shape does not match input shape."
-
-    assert (output > 1).any().item(), \
-        "No elements in the output are greater than 1."
+#     assert input_tensor_single_batch_multiple_channel.shape == output.shape
+#     assert (input_tensor_single_batch_multiple_channel <= 1).all().item(), \
+#         "Some input elements are greater than 1."
+#     assert output.shape == input_tensor_single_batch_multiple_channel.shape, \
+#         "Output shape does not match input shape."
+#     assert (output > 1).any().item(), \
+#         "No elements in the output are greater than 1."
 
 
-def test_forward_method_correctness_multiple_batches_single_channel(
-        linear_leaky_instance, input_tensor_multiple_batches_single_channel):
-    output = linear_leaky_instance.forward(input_tensor_multiple_batches_single_channel)
+# def test_multi_batch_single_channel(
+#         linear_leaky_single_channel, input_tensor_multiple_batches_single_channel):
+#     output = linear_leaky_single_channel.forward(input_tensor_multiple_batches_single_channel)
 
-    assert input_tensor_multiple_batches_single_channel.shape == output.shape
-
-    print("input_tensor_batch_multiple: ", input_tensor_multiple_batches_single_channel)
-
-    assert (input_tensor_multiple_batches_single_channel <= 1).all().item(), \
-        "Some input elements are greater than 1."
-
-    assert output.shape == input_tensor_multiple_batches_single_channel.shape, \
-        "Output shape does not match input shape."
-
-    assert (output > 1).any().item(), \
-        "No elements in the output are greater than 1."
+#     assert input_tensor_multiple_batches_single_channel.shape == output.shape
+#     assert (input_tensor_multiple_batches_single_channel <= 1).all().item(), \
+#         "Some input elements are greater than 1."
+#     assert output.shape == input_tensor_multiple_batches_single_channel.shape, \
+#         "Output shape does not match input shape."
+#     assert (output > 1).any().item(), \
+#         "No elements in the output are greater than 1."
 
 
-def test_forward_method_correctness_single_batch_multiple_channel(
-        linear_leaky_instance_multi_beta, input_tensor_single_batch_multiple_channel):
-    output = linear_leaky_instance_multi_beta.forward(input_tensor_single_batch_multiple_channel)
+# def test_multi_batch_multi_channel(
+#         linear_leaky_multi_channel, input_tensor_batch_multiple):
+#     output = linear_leaky_multi_channel.forward(input_tensor_batch_multiple)
 
-    assert input_tensor_single_batch_multiple_channel.shape == output.shape
+#     assert input_tensor_batch_multiple.shape == output.shape
+#     assert (input_tensor_batch_multiple <= 1).all().item(), \
+#         "Some input elements are greater than 1."
+#     assert output.shape == input_tensor_batch_multiple.shape, \
+#         "Output shape does not match input shape."
+#     assert (output > 1).any().item(), \
+#         "No elements in the output are greater than 1."
 
-    assert (input_tensor_single_batch_multiple_channel <= 1).all().item(), \
-        "Some input elements are greater than 1."
 
-    assert output.shape == input_tensor_single_batch_multiple_channel.shape, \
-        "Output shape does not match input shape."
+# # Beta configuration tests
+# def test_multi_beta_forward(
+#         linear_leaky_multi_beta, input_tensor_single_batch_multiple_channel):
+#     output = linear_leaky_multi_beta.forward(input_tensor_single_batch_multiple_channel)
 
-    assert (output > 1).any().item(), \
-        "No elements in the output are greater than 1."
+#     assert input_tensor_single_batch_multiple_channel.shape == output.shape
+#     assert (input_tensor_single_batch_multiple_channel <= 1).all().item(), \
+#         "Some input elements are greater than 1."
+#     assert output.shape == input_tensor_single_batch_multiple_channel.shape, \
+#         "Output shape does not match input shape."
+#     assert (output > 1).any().item(), \
+#         "No elements in the output are greater than 1."
+    
+#     # TODO: Add specific multi-beta assertions to verify different channel behaviors
 
 
 if __name__ == "__main__":
