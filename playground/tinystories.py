@@ -22,9 +22,10 @@ HIDDEN_DIM = 512
 LR = 1e-3
 EPOCHS = 10000
 BATCH_SIZE = 64
-LEARN_BETA = True 
+LEARN_BETA = True
 DEVICE = "cuda:0" if torch.cuda.is_available() else "cpu"
 print("Device: ", DEVICE)
+
 
 def initialize_wandb():
     wandb.init(project="snntorch-ssm", config={
@@ -41,7 +42,6 @@ def initialize_wandb():
 dataset = load_dataset("roneneldan/TinyStories", split="train")
 
 
-
 # Tokenizer
 tokenizer = AutoTokenizer.from_pretrained("gpt2")  # Use GPT-2 tokenizer for simplicity
 tokenizer.pad_token = tokenizer.eos_token  # Use the end-of-sequence token as padding
@@ -50,9 +50,11 @@ print("initialized tokenizer")
 
 VOCAB_SIZE = tokenizer.vocab_size
 
+
 def tokenize_fn(example):
     tokens = tokenizer(example["text"], truncation=True, max_length=SEQ_LENGTH, padding="max_length")
     return {"input_ids": tokens["input_ids"]}
+
 
 tokenized_dataset = dataset.map(tokenize_fn, batched=True)
 tokenized_dataset.set_format(type="torch", columns=["input_ids"])
@@ -61,15 +63,19 @@ print("tokenized dataset")
 
 dataloader = DataLoader(tokenized_dataset, batch_size=BATCH_SIZE, shuffle=True)
 
+
 class SNNLanguageModel(nn.Module):
     def __init__(self, vocab_size, hidden_dim):
         super(SNNLanguageModel, self).__init__()
         self.fc1 = nn.Linear(vocab_size, hidden_dim)
-        self.lif1 = StateLeaky(beta=torch.tensor([0.9]).to(DEVICE), learn_decay_filter=False, channels=hidden_dim, learn_beta=LEARN_BETA)
+        self.lif1 = StateLeaky(beta=torch.tensor([0.9]).to(
+            DEVICE), learn_decay_filter=False, channels=hidden_dim, learn_beta=LEARN_BETA)
         self.fc2 = nn.Linear(hidden_dim, hidden_dim)
-        self.lif2 = StateLeaky(beta=torch.tensor([0.9]).to(DEVICE), learn_decay_filter=False, channels=hidden_dim, learn_beta=LEARN_BETA)
+        self.lif2 = StateLeaky(beta=torch.tensor([0.9]).to(
+            DEVICE), learn_decay_filter=False, channels=hidden_dim, learn_beta=LEARN_BETA)
         self.fc3 = nn.Linear(hidden_dim, hidden_dim)
-        self.lif3 = StateLeaky(beta=torch.tensor([0.9]).to(DEVICE), learn_decay_filter=False, channels=hidden_dim, learn_beta=LEARN_BETA)
+        self.lif3 = StateLeaky(beta=torch.tensor([0.9]).to(
+            DEVICE), learn_decay_filter=False, channels=hidden_dim, learn_beta=LEARN_BETA)
         self.fc4 = nn.Linear(hidden_dim, vocab_size)
 
     def forward(self, x):
@@ -77,28 +83,29 @@ class SNNLanguageModel(nn.Module):
 
         # input transformation
         hidden = self.fc1(x)
-        hidden = hidden.reshape(SEQ_LENGTH-1, -1, hidden.shape[-1])
+        hidden = hidden.reshape(SEQ_LENGTH - 1, -1, hidden.shape[-1])
         hidden, _ = self.lif1(hidden)
         hidden = hidden.reshape(-1, hidden.shape[-1])
 
         # nonlinear hidden
         hidden = self.fc2(hidden)
         hidden = torch.relu(hidden)
-        hidden = hidden.reshape(SEQ_LENGTH-1, -1, hidden.shape[-1])
+        hidden = hidden.reshape(SEQ_LENGTH - 1, -1, hidden.shape[-1])
         hidden, _ = self.lif2(hidden)
         hidden = hidden.reshape(-1, hidden.shape[-1])
 
         # nonlinear hidden
         hidden = self.fc3(hidden)
         hidden = torch.relu(hidden)
-        hidden = hidden.reshape(SEQ_LENGTH-1, -1, hidden.shape[-1])
+        hidden = hidden.reshape(SEQ_LENGTH - 1, -1, hidden.shape[-1])
         hidden, _ = self.lif3(hidden)
         hidden = hidden.reshape(-1, hidden.shape[-1])
 
         # output transformation
         output = self.fc4(hidden)
-        output = output.reshape(SEQ_LENGTH-1, -1, output.shape[-1])
+        output = output.reshape(SEQ_LENGTH - 1, -1, output.shape[-1])
         return output
+
 
 initialize_wandb()
 
@@ -113,7 +120,7 @@ for epoch in range(EPOCHS):
     train_loss = 0
 
     batch_num = 0
-    for batch in tqdm(dataloader, desc=f"Training Epoch {epoch+1}"):
+    for batch in tqdm(dataloader, desc=f"Training Epoch {epoch + 1}"):
         batch_num += 1
         # print("batch num: ", batch_num)
         x = batch["input_ids"].to(DEVICE)
@@ -133,13 +140,13 @@ for epoch in range(EPOCHS):
         if batch_num % 50 == 0:
             output = output.permute(1, 0, 2)
             seq_translate = torch.argmax(output[0], dim=-1)
-            assert seq_translate.shape[0] == SEQ_LENGTH-1
-            with open("output.txt", "a") as f:
+            assert seq_translate.shape[0] == SEQ_LENGTH - 1
+            with open(filename, "a") as f:
                 f.write(tokenizer.decode(seq_translate))
                 f.write("\n")
             output = output.permute(1, 0, 2)
 
-        # assert output.shape == (SEQ_LENGTH-1, BATCH_SIZE, VOCAB_SIZE) 
+        # assert output.shape == (SEQ_LENGTH-1, BATCH_SIZE, VOCAB_SIZE)
         # assert y.shape == (SEQ_LENGTH-1, BATCH_SIZE, VOCAB_SIZE)
 
         y = y.argmax(dim=-1)
@@ -152,6 +159,6 @@ for epoch in range(EPOCHS):
         train_loss += loss.item()
 
     train_loss /= len(dataloader)
-    print(f"Epoch {epoch+1} Training Loss: {train_loss:.4f}")
+    print(f"Epoch {epoch + 1} Training Loss: {train_loss: .4f}")
 
 print("Training Complete!")
