@@ -23,7 +23,7 @@ LR = 1e-3
 EPOCHS = 10000
 BATCH_SIZE = 64
 LEARN_BETA = True
-DEVICE = "cuda:0" if torch.cuda.is_available() else "cpu"
+DEVICE = "cuda:0" if torch.cuda.is_available() else "mps"
 print("Device: ", DEVICE)
 
 

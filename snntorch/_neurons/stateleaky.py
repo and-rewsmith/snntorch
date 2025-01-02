@@ -45,8 +45,8 @@ class StateLeaky(LIF):
             learn_graded_spikes_factor=learn_graded_spikes_factor,
         )
 
-        self.learn_decay_filter = learn_decay_filter    
-        self.max_timesteps = max_timesteps 
+        self.learn_decay_filter = learn_decay_filter
+        self.max_timesteps = max_timesteps
         self._tau_buffer(self.beta, learn_beta, channels)
 
     @property
@@ -69,6 +69,9 @@ class StateLeaky(LIF):
 
     def _base_state_function(self, input_):
         num_steps, batch, channels = input_.shape
+
+        # confirm input shape
+        assert input_.shape == (num_steps, batch, channels)
 
         converted_tau = self.tau if self.tau.shape == (channels,) else self.tau.expand(channels).to(input_.device)
         assert converted_tau.shape == (channels,)
@@ -113,7 +116,7 @@ class StateLeaky(LIF):
             self.register_buffer("tau", tau)
 
         # this is super important to make sure that decay_filter can not
-        # require grad! 
+        # require grad!
         tau = self.tau.clone().detach()
 
         converted_tau = tau if tau.shape == (channels,) else tau.expand(channels)
@@ -125,11 +128,13 @@ class StateLeaky(LIF):
         time_steps = time_steps.unsqueeze(1).expand(self.max_timesteps, channels)
         assert time_steps.shape == (self.max_timesteps, channels)
 
+        decay_filter = torch.exp(-time_steps / converted_tau)
+        assert decay_filter.shape == (self.max_timesteps, channels)
+
         if self.learn_decay_filter:
-            self.decay_filter = nn.Parameter(torch.exp(-time_steps / converted_tau))
+            self.decay_filter = nn.Parameter(decay_filter)
         else:
-            self.register_buffer("decay_filter", torch.exp(-time_steps / converted_tau))    
-        assert self.decay_filter.shape == (self.max_timesteps, channels)
+            self.register_buffer("decay_filter", decay_filter)
 
     def full_mode_conv1d_truncated(self, input_tensor, kernel_tensor):
         # input_tensor: (batch, channels, num_steps)
