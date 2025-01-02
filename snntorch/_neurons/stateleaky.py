@@ -48,6 +48,7 @@ class StateLeaky(LIF):
         self.learn_decay_filter = learn_decay_filter
         self.max_timesteps = max_timesteps
         self._tau_buffer(self.beta, learn_beta, channels)
+        self.input_dependence = nn.Linear(channels, channels, bias=True)
 
     @property
     def beta(self):
@@ -73,6 +74,16 @@ class StateLeaky(LIF):
         # confirm input shape
         assert input_.shape == (num_steps, batch, channels)
 
+        # calc input dependence
+        input_dependent_decay_modifier = self.input_dependence(input_.reshape(num_steps * batch, channels))
+        input_dependent_decay_modifier = input_dependent_decay_modifier.reshape(num_steps, batch, channels)
+        input_dependent_decay_modifier = input_dependent_decay_modifier.permute(2, 1, 0)
+        input_dependent_decay_modifier = torch.sigmoid(input_dependent_decay_modifier)
+        assert input_dependent_decay_modifier.shape == (channels, batch, num_steps)
+
+        input_ = input_.permute(1, 2, 0)
+        assert input_.shape == (batch, channels, num_steps)
+
         converted_tau = self.tau if self.tau.shape == (channels,) else self.tau.expand(channels).to(input_.device)
         assert converted_tau.shape == (channels,)
 
@@ -91,12 +102,12 @@ class StateLeaky(LIF):
         # print()
 
         # prepare for convolution
-        input_ = input_.permute(1, 2, 0)
-        assert input_.shape == (batch, channels, num_steps)
         decay_filter = decay_filter.permute(1, 0).unsqueeze(1)
         assert decay_filter.shape == (channels, 1, num_steps)
+        decay_filter = decay_filter.expand(channels, batch, num_steps)
+        assert decay_filter.shape == (channels, batch, num_steps)
 
-        conv_result = self.full_mode_conv1d_truncated(input_, decay_filter)
+        conv_result = self.full_mode_conv1d_truncated(input_, input_dependent_decay_modifier * decay_filter)
         assert conv_result.shape == (batch, channels, num_steps)
 
         return conv_result.permute(2, 0, 1)  # return membrane potential trace
@@ -137,31 +148,104 @@ class StateLeaky(LIF):
             self.register_buffer("decay_filter", decay_filter)
 
     def full_mode_conv1d_truncated(self, input_tensor, kernel_tensor):
-        # input_tensor: (batch, channels, num_steps)
-        # kernel_tensor: (channels, 1, kernel_size)
+        """
+        Performs batch and channel-specific 1D convolutions using grouped convolution.
+
+        torch.nn.functional.conv1d expects:
+            - input shape: (batch_size, in_channels, length)
+            - kernel shape: (out_channels, in_channels_per_group, kernel_length)
+            - groups parameter: splits input channels into independent groups
+
+        When groups=N:
+            - Input channels are split into N groups
+            - Each group is convolved with its own kernel independently
+            - Each group's input channels = total_channels ÷ N
+        """
+        # input_tensor: (batch=B, channels=C, num_steps=S)
+        # kernel_tensor: (channels=C, batch=B, kernel_size=K)
         kernel_tensor = torch.flip(kernel_tensor, dims=[-1]).to(input_tensor.device)
 
-        # get dimensions
-        batch_size, in_channels, num_steps = input_tensor.shape
-        out_channels, _, kernel_size = kernel_tensor.shape
+        # Get dimensions and verify shapes match
+        batch_size_input, channels_input, num_steps = input_tensor.shape
+        channels_kernel, batch_size_kernel, kernel_size = kernel_tensor.shape
+        assert batch_size_input == batch_size_kernel
+        assert channels_input == channels_kernel
+        assert num_steps == kernel_size
 
-        # pad the input tensor on both sides
+        # We want each batch-channel combination to have its own independent convolution.
+        # To achieve this, we'll use grouped convolution with groups = B*C
+        # This means each input channel will be convolved with exactly one kernel.
+        total_groups = batch_size_input * channels_input
+
+        # Step 1: Reshape input for grouped convolution
+        # From: (batch=B, channels=C, steps=S)
+        # To:   (batch=1, total_groups=B*C, steps=S)
+        # The 1 in the batch dimension is because we're treating each channel independently
+        input_reshaped = input_tensor.reshape(1, total_groups, num_steps)
+        assert input_reshaped.shape == (1, total_groups, num_steps)
+
+        # Step 2: Reshape kernel for grouped convolution
+        # From: (channels=C, batch=B, kernel_size=K)
+        # To:   (total_groups=B*C, in_channels_per_group=1, kernel_size=K)
+        # The middle 1 is required because each group processes 1 channel
+        kernel_reshaped = kernel_tensor.permute(1, 0, 2)  # First get batch and channels adjacent
+        assert kernel_reshaped.shape == (batch_size_kernel, channels_kernel, kernel_size)
+        kernel_reshaped = kernel_reshaped.reshape(total_groups, 1, kernel_size)
+        assert kernel_reshaped.shape == (total_groups, 1, kernel_size)
+
+        # Add padding for full convolution
         padding = kernel_size - 1
-        padded_input = F.pad(input_tensor, (padding, padding))
+        padded_input = F.pad(input_reshaped, (padding, padding))
 
-        # print(padded_input.shape)
-        # print(input_tensor.shape)
-        # print("------input / kernel-------------")
-        # print(input_tensor)
-        # print(kernel_tensor)
+        # Verify shapes before convolution
+        assert padded_input.shape == (1, total_groups, num_steps + 2 * padding)
+        assert kernel_reshaped.shape == (total_groups, 1, kernel_size)
 
-        # perform convolution with the padded input
-        conv_result = F.conv1d(padded_input, kernel_tensor, groups=in_channels)
+        # Perform grouped convolution
+        # - groups=total_groups means each channel gets its own independent convolution
+        # - each group has 1 input channel and 1 output channel
+        # - total number of groups = B*C (batch_size * channels)
+        conv_result = F.conv1d(padded_input, kernel_reshaped, groups=total_groups)
 
-        # truncate the result to match the original input length
-        truncated_result = conv_result[..., 0:num_steps]
+        # Truncate to original sequence length
+        conv_result = conv_result[..., 0:num_steps]
 
-        return truncated_result
+        # # Debug prints
+        # print("Conv result shape:", conv_result.shape)
+        # print("Expected shape:", (batch_size_input, channels_input, num_steps))
+        # print("Total elements in conv_result:", conv_result.numel())
+        # print("Total elements expected:", batch_size_input * channels_input * num_steps)
+
+        # Reshape back to original
+        # From: (1, B*C, S) -> (B, C, S)
+        return conv_result.reshape(batch_size_input, channels_input, num_steps)
+
+    # def full_mode_conv1d_truncated(self, input_tensor, kernel_tensor):
+    #     # input_tensor: (batch, channels, num_steps)
+    #     # kernel_tensor: (channels, 1, kernel_size)
+    #     kernel_tensor = torch.flip(kernel_tensor, dims=[-1]).to(input_tensor.device)
+
+    #     # get dimensions
+    #     batch_size, in_channels, num_steps = input_tensor.shape
+    #     out_channels, _, kernel_size = kernel_tensor.shape
+
+    #     # pad the input tensor on both sides
+    #     padding = kernel_size - 1
+    #     padded_input = F.pad(input_tensor, (padding, padding))
+
+    #     # print(padded_input.shape)
+    #     # print(input_tensor.shape)
+    #     # print("------input / kernel-------------")
+    #     # print(input_tensor)
+    #     # print(kernel_tensor)
+
+    #     # perform convolution with the padded input
+    #     conv_result = F.conv1d(padded_input, kernel_tensor, groups=in_channels)
+
+    #     # truncate the result to match the original input length
+    #     truncated_result = conv_result[..., 0:num_steps]
+
+    #     return truncated_result
 
 # TODO: throw exceptions if calling subclass methods we don't want to use
 # fire_inhibition
