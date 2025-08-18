@@ -4,16 +4,17 @@ from torch.nn import functional as F
 from profilehooks import profile
 
 from .neurons import LIF
+
 # from .linearleaky import LinearLeaky
 
 
 class StateLeaky(LIF):
     """
-    TODO: write some docstring similar to SNN.Leaky
+        TODO: write some docstring similar to SNN.Leaky
 
-     Jason wrote:
--      beta = (1 - delta_t / tau), can probably set delta_t to "1"
--      if tau > delta_t, then beta: (0, 1)
+         Jason wrote:
+    -      beta = (1 - delta_t / tau), can probably set delta_t to "1"
+    -      if tau > delta_t, then beta: (0, 1)
     """
 
     def __init__(
@@ -29,7 +30,7 @@ class StateLeaky(LIF):
         state_quant=False,
         output=True,
         graded_spikes_factor=1.0,
-        max_timesteps=256,
+        max_timesteps=256,  # to-do: not necessary? make it a function of input_
         learn_graded_spikes_factor=False,
     ):
         super().__init__(
@@ -45,8 +46,8 @@ class StateLeaky(LIF):
             learn_graded_spikes_factor=learn_graded_spikes_factor,
         )
 
-        self.learn_decay_filter = learn_decay_filter    
-        self.max_timesteps = max_timesteps 
+        self.learn_decay_filter = learn_decay_filter
+        self.max_timesteps = max_timesteps
         self._tau_buffer(self.beta, learn_beta, channels)
 
     @property
@@ -70,7 +71,11 @@ class StateLeaky(LIF):
     def _base_state_function(self, input_):
         num_steps, batch, channels = input_.shape
 
-        converted_tau = self.tau if self.tau.shape == (channels,) else self.tau.expand(channels).to(input_.device)
+        converted_tau = (
+            self.tau
+            if self.tau.shape == (channels,)
+            else self.tau.expand(channels).to(input_.device)
+        )
         assert converted_tau.shape == (channels,)
 
         # init decay filter
@@ -81,15 +86,18 @@ class StateLeaky(LIF):
         decay_filter = self.decay_filter.clone()
         assert decay_filter.shape == (self.max_timesteps, channels)
         decay_filter = decay_filter[:num_steps]
-        assert decay_filter.shape == (num_steps, channels)
 
-        # print("------------decay filter------------")
-        # print(decay_filter)
-        # print()
+        print("------------decay filter------------")
+        print(decay_filter.shape)
+        print(num_steps)
+        print(channels)
+
+        assert decay_filter.shape == (num_steps, channels)
 
         # prepare for convolution
         input_ = input_.permute(1, 2, 0)
         assert input_.shape == (batch, channels, num_steps)
+        # to-do: is unsqueeze necessary? batch should automatically expand
         decay_filter = decay_filter.permute(1, 0).unsqueeze(1)
         assert decay_filter.shape == (channels, 1, num_steps)
 
@@ -102,8 +110,14 @@ class StateLeaky(LIF):
         if not isinstance(beta, torch.Tensor):
             beta = torch.as_tensor(beta)
 
-        if beta.shape != (channels,) and beta.shape != () and beta.shape != (1,):
-            raise ValueError(f"Beta shape {beta.shape} must be either ({channels},) or (1,)")
+        if (
+            beta.shape != (channels,)
+            and beta.shape != ()
+            and beta.shape != (1,)
+        ):
+            raise ValueError(
+                f"Beta shape {beta.shape} must be either ({channels},) or (1,)"
+            )
 
         tau = 1 / (1 - beta + 1e-12)
 
@@ -113,28 +127,42 @@ class StateLeaky(LIF):
             self.register_buffer("tau", tau)
 
         # this is super important to make sure that decay_filter can not
-        # require grad! 
+        # require grad!
         tau = self.tau.clone().detach()
 
-        converted_tau = tau if tau.shape == (channels,) else tau.expand(channels)
+        converted_tau = (
+            tau if tau.shape == (channels,) else tau.expand(channels)
+        )
         assert converted_tau.shape == (channels,)
 
         # Create time steps array similar to _base_state_function
-        time_steps = torch.arange(0, self.max_timesteps).to(converted_tau.device)
+        time_steps = torch.arange(0, self.max_timesteps).to(
+            converted_tau.device
+        )
         assert time_steps.shape == (self.max_timesteps,)
-        time_steps = time_steps.unsqueeze(1).expand(self.max_timesteps, channels)
+        time_steps = time_steps.unsqueeze(1).expand(
+            self.max_timesteps, channels
+        )
         assert time_steps.shape == (self.max_timesteps, channels)
 
         if self.learn_decay_filter:
-            self.decay_filter = nn.Parameter(torch.exp(-time_steps / converted_tau))
+            # to fix: converted_tau = nn.Parameter(converted_tau)
+            # remove nn.Parameter() from the torch.exp() call, just make that register_buffer?
+            self.decay_filter = nn.Parameter(
+                torch.exp(-time_steps / converted_tau)
+            )
         else:
-            self.register_buffer("decay_filter", torch.exp(-time_steps / converted_tau))    
+            self.register_buffer(
+                "decay_filter", torch.exp(-time_steps / converted_tau)
+            )
         assert self.decay_filter.shape == (self.max_timesteps, channels)
 
     def full_mode_conv1d_truncated(self, input_tensor, kernel_tensor):
         # input_tensor: (batch, channels, num_steps)
         # kernel_tensor: (channels, 1, kernel_size)
-        kernel_tensor = torch.flip(kernel_tensor, dims=[-1]).to(input_tensor.device)
+        kernel_tensor = torch.flip(kernel_tensor, dims=[-1]).to(
+            input_tensor.device
+        )
 
         # get dimensions
         batch_size, in_channels, num_steps = input_tensor.shape
@@ -158,6 +186,7 @@ class StateLeaky(LIF):
 
         return truncated_result
 
+
 # TODO: throw exceptions if calling subclass methods we don't want to use
 # fire_inhibition
 # mem_reset, init, detach, zeros, reset_mem, init_leaky
@@ -174,7 +203,12 @@ if __name__ == "__main__":
     print("batch: ", batch)
     print("channels: ", channels)
     print()
-    input_ = torch.arange(1, timesteps * batch * channels + 1).float().view(timesteps, batch, channels).to(device)
+    input_ = (
+        torch.arange(1, timesteps * batch * channels + 1)
+        .float()
+        .view(timesteps, batch, channels)
+        .to(device)
+    )
     print("--------input tensor-----------")
     print(input_)
     print()
