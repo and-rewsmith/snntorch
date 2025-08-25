@@ -2,10 +2,7 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 from profilehooks import profile
-
 from .neurons import LIF
-
-# from .linearleaky import LinearLeaky
 
 
 class StateLeaky(LIF):
@@ -25,12 +22,10 @@ class StateLeaky(LIF):
         spike_grad=None,
         surrogate_disable=False,
         learn_beta=False,
-        learn_decay_filter=False,
         learn_threshold=False,
         state_quant=False,
         output=True,
         graded_spikes_factor=1.0,
-        max_timesteps=256,  # to-do: not necessary? make it a function of input_
         learn_graded_spikes_factor=False,
     ):
         super().__init__(
@@ -46,15 +41,13 @@ class StateLeaky(LIF):
             learn_graded_spikes_factor=learn_graded_spikes_factor,
         )
 
-        self.learn_decay_filter = learn_decay_filter
-        self.max_timesteps = max_timesteps
         self._tau_buffer(self.beta, learn_beta, channels)
 
     @property
     def beta(self):
         return (self.tau - 1) / self.tau
 
-    # @profile(skip=True, stdout=True, filename='baseline.prof')
+    @profile(skip=False, stdout=False, filename="baseline.prof")
     def forward(self, input_):
         self.mem = self._base_state_function(input_)
 
@@ -71,34 +64,19 @@ class StateLeaky(LIF):
     def _base_state_function(self, input_):
         num_steps, batch, channels = input_.shape
 
-        # converted_tau = (
-        #     self.tau
-        #     if self.tau.shape == (channels,)
-        #     else self.tau.expand(channels).to(input_.device)
-        # )
-        # assert converted_tau.shape == (channels,)
-
-        # init decay filter
-        # print(time_steps.shape)
-        # print(self.tau.shape)
-
-        # truncate decay filter to num_steps
-        decay_filter = self.decay_filter.clone()
-        print(decay_filter.shape)
-        assert decay_filter.shape == (self.max_timesteps, channels)
-        decay_filter = decay_filter[:num_steps]
-
-        print("------------decay filter------------")
-        print(decay_filter.shape)
-        print(num_steps)
-        print(channels)
-
+        # make the decay filter
+        time_steps = torch.arange(0, num_steps).to(input_.device)
+        assert time_steps.shape == (num_steps,)
+        decay_filter = (
+            torch.exp(-time_steps / self.tau.to(input_.device))
+            .unsqueeze(1)
+            .expand(num_steps, channels)
+        )
         assert decay_filter.shape == (num_steps, channels)
 
         # prepare for convolution
         input_ = input_.permute(1, 2, 0)
         assert input_.shape == (batch, channels, num_steps)
-        # to-do: is unsqueeze necessary? batch should automatically expand
         decay_filter = decay_filter.permute(1, 0).unsqueeze(1)
         assert decay_filter.shape == (channels, 1, num_steps)
 
@@ -121,42 +99,61 @@ class StateLeaky(LIF):
             )
 
         tau = 1 / (1 - beta + 1e-12)
-
         if learn_beta:
             self.tau = nn.Parameter(tau)
         else:
             self.register_buffer("tau", tau)
 
-        # this is super important to make sure that decay_filter can not
-        # require grad!
-        tau = self.tau.clone().detach()
+    # def _tau_buffer(self, beta, learn_beta, channels):
+    #     if not isinstance(beta, torch.Tensor):
+    #         beta = torch.as_tensor(beta)
 
-        converted_tau = (
-            tau if tau.shape == (channels,) else tau.expand(channels)
-        )
-        assert converted_tau.shape == (channels,)
+    #     if (
+    #         beta.shape != (channels,)
+    #         and beta.shape != ()
+    #         and beta.shape != (1,)
+    #     ):
+    #         raise ValueError(
+    #             f"Beta shape {beta.shape} must be either ({channels},) or (1,)"
+    #         )
 
-        # Create time steps array similar to _base_state_function
-        time_steps = torch.arange(0, self.max_timesteps).to(
-            converted_tau.device
-        )
-        assert time_steps.shape == (self.max_timesteps,)
-        time_steps = time_steps.unsqueeze(1).expand(
-            self.max_timesteps, channels
-        )
-        assert time_steps.shape == (self.max_timesteps, channels)
+    #     tau = 1 / (1 - beta + 1e-12)
 
-        if self.learn_decay_filter:
-            # to fix: converted_tau = nn.Parameter(converted_tau)
-            # remove nn.Parameter() from the torch.exp() call, just make that register_buffer?
-            self.decay_filter = nn.Parameter(
-                torch.exp(-time_steps / converted_tau)
-            )
-        else:
-            self.register_buffer(
-                "decay_filter", torch.exp(-time_steps / converted_tau)
-            )
-        assert self.decay_filter.shape == (self.max_timesteps, channels)
+    #     if learn_beta:
+    #         self.tau = nn.Parameter(tau)
+    #     else:
+    #         self.register_buffer("tau", tau)
+
+    #     # this is super important to make sure that decay_filter can not
+    #     # require grad!
+    #     tau = self.tau.clone().detach()
+
+    #     converted_tau = (
+    #         tau if tau.shape == (channels,) else tau.expand(channels)
+    #     )
+    #     assert converted_tau.shape == (channels,)
+
+    #     # Create time steps array similar to _base_state_function
+    #     time_steps = torch.arange(0, self.max_timesteps).to(
+    #         converted_tau.device
+    #     )
+    #     assert time_steps.shape == (self.max_timesteps,)
+    #     time_steps = time_steps.unsqueeze(1).expand(
+    #         self.max_timesteps, channels
+    #     )
+    #     assert time_steps.shape == (self.max_timesteps, channels)
+
+    #     if self.learn_decay_filter:
+    #         # to fix: converted_tau = nn.Parameter(converted_tau)
+    #         # remove nn.Parameter() from the torch.exp() call, just make that register_buffer?
+    #         self.decay_filter = nn.Parameter(
+    #             torch.exp(-time_steps / converted_tau)
+    #         )
+    #     else:
+    #         self.register_buffer(
+    #             "decay_filter", torch.exp(-time_steps / converted_tau)
+    #         )
+    #     assert self.decay_filter.shape == (self.max_timesteps, channels)
 
     def full_mode_conv1d_truncated(self, input_tensor, kernel_tensor):
         # input_tensor: (batch, channels, num_steps)
