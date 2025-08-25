@@ -67,12 +67,28 @@ class StateLeaky(LIF):
         # make the decay filter
         time_steps = torch.arange(0, num_steps).to(input_.device)
         assert time_steps.shape == (num_steps,)
-        decay_filter = (
-            torch.exp(-time_steps / self.tau.to(input_.device))
-            .unsqueeze(1)
-            .expand(num_steps, channels)
-        )
-        assert decay_filter.shape == (num_steps, channels)
+
+        # single channel case
+        if self.tau.shape == ():
+            decay_filter = (
+                torch.exp(-time_steps / self.tau.to(input_.device))
+                .unsqueeze(1)
+                .expand(num_steps, channels)
+            )
+            assert decay_filter.shape == (num_steps, channels)
+        # multichannel case
+        else:
+            # expand timesteps to be fo shape (num_steps, channels)
+            time_steps = time_steps.unsqueeze(1).expand(num_steps, channels)
+            # expand tau to be of shape (num_steps, channels)
+            tau = (
+                self.tau.unsqueeze(0)
+                .expand(num_steps, channels)
+                .to(input_.device)
+            )
+            # compute decay filter
+            decay_filter = torch.exp(-time_steps / tau)
+            assert decay_filter.shape == (num_steps, channels)
 
         # prepare for convolution
         input_ = input_.permute(1, 2, 0)

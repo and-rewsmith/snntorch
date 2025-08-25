@@ -17,7 +17,6 @@ Test Structure:
 
 2. Learning Parameter Tests:
     - Multi-beta learning (tests learn_beta=True)
-    - Decay filter learning (tests learn_decay_filter=True)
 
 Coverage:
 --------
