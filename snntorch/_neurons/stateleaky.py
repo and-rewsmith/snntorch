@@ -104,82 +104,25 @@ class StateLeaky(LIF):
         else:
             self.register_buffer("tau", tau)
 
-    # def _tau_buffer(self, beta, learn_beta, channels):
-    #     if not isinstance(beta, torch.Tensor):
-    #         beta = torch.as_tensor(beta)
-
-    #     if (
-    #         beta.shape != (channels,)
-    #         and beta.shape != ()
-    #         and beta.shape != (1,)
-    #     ):
-    #         raise ValueError(
-    #             f"Beta shape {beta.shape} must be either ({channels},) or (1,)"
-    #         )
-
-    #     tau = 1 / (1 - beta + 1e-12)
-
-    #     if learn_beta:
-    #         self.tau = nn.Parameter(tau)
-    #     else:
-    #         self.register_buffer("tau", tau)
-
-    #     # this is super important to make sure that decay_filter can not
-    #     # require grad!
-    #     tau = self.tau.clone().detach()
-
-    #     converted_tau = (
-    #         tau if tau.shape == (channels,) else tau.expand(channels)
-    #     )
-    #     assert converted_tau.shape == (channels,)
-
-    #     # Create time steps array similar to _base_state_function
-    #     time_steps = torch.arange(0, self.max_timesteps).to(
-    #         converted_tau.device
-    #     )
-    #     assert time_steps.shape == (self.max_timesteps,)
-    #     time_steps = time_steps.unsqueeze(1).expand(
-    #         self.max_timesteps, channels
-    #     )
-    #     assert time_steps.shape == (self.max_timesteps, channels)
-
-    #     if self.learn_decay_filter:
-    #         # to fix: converted_tau = nn.Parameter(converted_tau)
-    #         # remove nn.Parameter() from the torch.exp() call, just make that register_buffer?
-    #         self.decay_filter = nn.Parameter(
-    #             torch.exp(-time_steps / converted_tau)
-    #         )
-    #     else:
-    #         self.register_buffer(
-    #             "decay_filter", torch.exp(-time_steps / converted_tau)
-    #         )
-    #     assert self.decay_filter.shape == (self.max_timesteps, channels)
-
     def full_mode_conv1d_truncated(self, input_tensor, kernel_tensor):
-        # input_tensor: (batch, channels, num_steps)
+        # get dimensions
+        batch_size, in_channels, num_steps = input_tensor.shape
         # kernel_tensor: (channels, 1, kernel_size)
+        out_channels, _, kernel_size = kernel_tensor.shape
+
         kernel_tensor = torch.flip(kernel_tensor, dims=[-1]).to(
             input_tensor.device
         )
-
-        # get dimensions
-        batch_size, in_channels, num_steps = input_tensor.shape
-        out_channels, _, kernel_size = kernel_tensor.shape
 
         # pad the input tensor on both sides
         padding = kernel_size - 1
         padded_input = F.pad(input_tensor, (padding, padding))
 
-        # print(padded_input.shape)
-        # print(input_tensor.shape)
-        # print("------input / kernel-------------")
-        # print(input_tensor)
-        # print(kernel_tensor)
-
         # perform convolution with the padded input
         conv_result = F.conv1d(padded_input, kernel_tensor, groups=in_channels)
 
         # truncate the result to match the original input length
+        # TODO: potential optimization?
         truncated_result = conv_result[..., 0:num_steps]
 
         return truncated_result
