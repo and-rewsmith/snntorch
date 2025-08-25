@@ -2,7 +2,6 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 from profilehooks import profile
-
 from .neurons import LIF
 
 # from .linearleaky import LinearLeaky
@@ -84,7 +83,6 @@ class StateLeaky(LIF):
 
         # truncate decay filter to num_steps
         decay_filter = self.decay_filter.clone()
-        print(decay_filter.shape)
         assert decay_filter.shape == (self.max_timesteps, channels)
         decay_filter = decay_filter[:num_steps]
 
