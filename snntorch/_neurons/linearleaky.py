@@ -45,6 +45,7 @@ class LinearLeaky(StateLeaky):
             output=output,
             graded_spikes_factor=graded_spikes_factor,
             learn_graded_spikes_factor=learn_graded_spikes_factor,
+            channels=out_features,
         )
 
         self.linear = nn.Linear(
@@ -61,10 +62,11 @@ class LinearLeaky(StateLeaky):
 
     # @profile(skip=True, stdout=True, filename='baseline.prof')
     def forward(self, input_):
+        num_steps, batch, channels = input_.shape
 
-        input_ = self.linear(
-            input_.reshape(-1, self.linear.in_features)
-        )  # TODO: input_ must be transformed T x B x C --> (T*B) x C
+        input_ = self.linear(input_.reshape(-1, self.linear.in_features))
+
+        input_ = input_.reshape(num_steps, batch, self.linear.out_features)
         self.mem = self._base_state_function(input_)
 
         if self.state_quant:
