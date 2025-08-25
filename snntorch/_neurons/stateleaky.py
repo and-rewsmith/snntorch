@@ -47,7 +47,7 @@ class StateLeaky(LIF):
     def beta(self):
         return (self.tau - 1) / self.tau
 
-    @profile(skip=False, stdout=False, filename="baseline.prof")
+    # @profile(skip=False, stdout=False, filename="baseline.prof")
     def forward(self, input_):
         self.mem = self._base_state_function(input_)
 
