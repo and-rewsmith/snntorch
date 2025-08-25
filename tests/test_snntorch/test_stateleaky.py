@@ -23,7 +23,7 @@ Coverage:
 - Input/output shape consistency
 - Input value bounds (≤ 1)
 - Output activation (presence of values > 1)
-- Parameter learnability for learn_beta and learn_decay_filter
+- Parameter learnability for learn_beta
 
 Limitations:
 -----------
