@@ -22,7 +22,7 @@ SWEEP_CONFIGS = [
     (10, 20),
     (1, 5),
 ]
-N_RUNS = 40
+N_RUNS = 6
 
 # Same timestep schedule as baseline
 TIMESTEPS = np.logspace(1, 5.2, num=10, dtype=int)
@@ -230,8 +230,21 @@ if __name__ == "__main__":
         sys.exit(0)
 
     # Main mode: launch workers
-    results_infer = []
-    results_train = []
+    METRIC_KEYS = [
+        "times_leaky",
+        "times_state",
+        "mems_leaky",
+        "mems_state",
+    ]
+
+    # Accumulators for mean/std across runs
+    infer_sum = None
+    infer_sumsq = None
+    infer_meta = None  # holds batch_size/channels per cfg
+
+    train_sum = None
+    train_sumsq = None
+    train_meta = None
 
     for run_idx in range(N_RUNS):
         outfile = f"results_run{run_idx}.json"
@@ -250,41 +263,90 @@ if __name__ == "__main__":
             data = json.load(f)
         infer, train = data["infer"], data["train"]
 
-        if run_idx == 0:
-            results_infer = [dict(cfg) for cfg in infer]
-            results_train = [dict(cfg) for cfg in train]
+        if infer_sum is None:
+            # initialize accumulators and metadata
+            infer_sum = []
+            infer_sumsq = []
+            infer_meta = []
+            for cfg in infer:
+                infer_meta.append(
+                    {
+                        "batch_size": cfg["batch_size"],
+                        "channels": cfg["channels"],
+                    }
+                )
+                cfg_sum = {}
+                cfg_sumsq = {}
+                for k in METRIC_KEYS:
+                    arr = np.array(cfg[k], dtype=float)
+                    cfg_sum[k] = arr.copy()
+                    cfg_sumsq[k] = arr**2
+                infer_sum.append(cfg_sum)
+                infer_sumsq.append(cfg_sumsq)
         else:
-            for cfg_idx in range(len(SWEEP_CONFIGS)):
-                for k in [
-                    "times_leaky",
-                    "times_state",
-                    "mems_leaky",
-                    "mems_state",
-                ]:
-                    results_infer[cfg_idx][k] = (
-                        np.array(results_infer[cfg_idx][k])
-                        + np.array(infer[cfg_idx][k])
-                    ).tolist()
-                    results_train[cfg_idx][k] = (
-                        np.array(results_train[cfg_idx][k])
-                        + np.array(train[cfg_idx][k])
-                    ).tolist()
+            for cfg_idx in range(len(infer)):
+                for k in METRIC_KEYS:
+                    arr = np.array(infer[cfg_idx][k], dtype=float)
+                    infer_sum[cfg_idx][k] = infer_sum[cfg_idx][k] + arr
+                    infer_sumsq[cfg_idx][k] = infer_sumsq[cfg_idx][k] + arr**2
 
-    # Average across runs
-    if N_RUNS > 1:
-        for cfg_idx in range(len(SWEEP_CONFIGS)):
-            for k in [
-                "times_leaky",
-                "times_state",
-                "mems_leaky",
-                "mems_state",
-            ]:
-                results_infer[cfg_idx][k] = (
-                    np.array(results_infer[cfg_idx][k]) / N_RUNS
-                ).tolist()
-                results_train[cfg_idx][k] = (
-                    np.array(results_train[cfg_idx][k]) / N_RUNS
-                ).tolist()
+        if train_sum is None:
+            train_sum = []
+            train_sumsq = []
+            train_meta = []
+            for cfg in train:
+                train_meta.append(
+                    {
+                        "batch_size": cfg["batch_size"],
+                        "channels": cfg["channels"],
+                    }
+                )
+                cfg_sum = {}
+                cfg_sumsq = {}
+                for k in METRIC_KEYS:
+                    arr = np.array(cfg[k], dtype=float)
+                    cfg_sum[k] = arr.copy()
+                    cfg_sumsq[k] = arr**2
+                train_sum.append(cfg_sum)
+                train_sumsq.append(cfg_sumsq)
+        else:
+            for cfg_idx in range(len(train)):
+                for k in METRIC_KEYS:
+                    arr = np.array(train[cfg_idx][k], dtype=float)
+                    train_sum[cfg_idx][k] = train_sum[cfg_idx][k] + arr
+                    train_sumsq[cfg_idx][k] = train_sumsq[cfg_idx][k] + arr**2
+
+    # Compute mean and std across runs
+    results_infer = []
+    results_train = []
+    for cfg_idx in range(len(SWEEP_CONFIGS)):
+        # Inference
+        cfg_res = {
+            "batch_size": infer_meta[cfg_idx]["batch_size"],
+            "channels": infer_meta[cfg_idx]["channels"],
+        }
+        for k in METRIC_KEYS:
+            mean_arr = infer_sum[cfg_idx][k] / max(N_RUNS, 1)
+            var_arr = infer_sumsq[cfg_idx][k] / max(N_RUNS, 1) - mean_arr**2
+            var_arr = np.maximum(var_arr, 0.0)
+            std_arr = np.sqrt(var_arr)
+            cfg_res[k] = mean_arr.tolist()
+            cfg_res[f"std_{k}"] = std_arr.tolist()
+        results_infer.append(cfg_res)
+
+        # Training
+        cfg_res_t = {
+            "batch_size": train_meta[cfg_idx]["batch_size"],
+            "channels": train_meta[cfg_idx]["channels"],
+        }
+        for k in METRIC_KEYS:
+            mean_arr = train_sum[cfg_idx][k] / max(N_RUNS, 1)
+            var_arr = train_sumsq[cfg_idx][k] / max(N_RUNS, 1) - mean_arr**2
+            var_arr = np.maximum(var_arr, 0.0)
+            std_arr = np.sqrt(var_arr)
+            cfg_res_t[k] = mean_arr.tolist()
+            cfg_res_t[f"std_{k}"] = std_arr.tolist()
+        results_train.append(cfg_res_t)
 
     # ---- Plots ----
     fig, axes = plt.subplots(2, 2, figsize=(14, 12))
@@ -295,65 +357,81 @@ if __name__ == "__main__":
     for idx, res in enumerate(results_infer):
         color = cmap(idx % 10)
         label_suffix = f"B{res['batch_size']}-C{res['channels']}"
-        ax_time_inf.plot(
+        ax_time_inf.errorbar(
             TIMESTEPS,
             res["times_leaky"],
-            "-",
+            yerr=res.get("std_times_leaky", None),
+            fmt="-",
             color=color,
             label=f"Leaky {label_suffix}",
+            capsize=3,
         )
-        ax_time_inf.plot(
+        ax_time_inf.errorbar(
             TIMESTEPS,
             res["times_state"],
-            "--",
+            yerr=res.get("std_times_state", None),
+            fmt="--",
             color=color,
             label=f"StateLeaky {label_suffix}",
+            capsize=3,
         )
-        ax_mem_inf.plot(
+        ax_mem_inf.errorbar(
             TIMESTEPS,
             res["mems_leaky"],
-            "-",
+            yerr=res.get("std_mems_leaky", None),
+            fmt="-",
             color=color,
             label=f"Leaky {label_suffix}",
+            capsize=3,
         )
-        ax_mem_inf.plot(
+        ax_mem_inf.errorbar(
             TIMESTEPS,
             res["mems_state"],
-            "--",
+            yerr=res.get("std_mems_state", None),
+            fmt="--",
             color=color,
             label=f"StateLeaky {label_suffix}",
+            capsize=3,
         )
 
     for idx, res in enumerate(results_train):
         color = cmap(idx % 10)
         label_suffix = f"B{res['batch_size']}-C{res['channels']}"
-        ax_time_trn.plot(
+        ax_time_trn.errorbar(
             TIMESTEPS,
             res["times_leaky"],
-            "-",
+            yerr=res.get("std_times_leaky", None),
+            fmt="-",
             color=color,
             label=f"Leaky (train) {label_suffix}",
+            capsize=3,
         )
-        ax_time_trn.plot(
+        ax_time_trn.errorbar(
             TIMESTEPS,
             res["times_state"],
-            "--",
+            yerr=res.get("std_times_state", None),
+            fmt="--",
             color=color,
             label=f"StateLeaky (train) {label_suffix}",
+            capsize=3,
         )
-        ax_mem_trn.plot(
+        ax_mem_trn.errorbar(
             TIMESTEPS,
             res["mems_leaky"],
-            "-",
+            yerr=res.get("std_mems_leaky", None),
+            fmt="-",
             color=color,
             label=f"Leaky (train) {label_suffix}",
+            capsize=3,
         )
-        ax_mem_trn.plot(
+        ax_mem_trn.errorbar(
             TIMESTEPS,
             res["mems_state"],
-            "--",
+            yerr=res.get("std_mems_state", None),
+            fmt="--",
             color=color,
             label=f"StateLeaky (train) {label_suffix}",
+            capsize=3,
         )
 
     for ax in (ax_time_inf, ax_mem_inf, ax_time_trn, ax_mem_trn):
