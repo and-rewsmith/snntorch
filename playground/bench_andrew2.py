@@ -3,7 +3,11 @@ import numpy as np
 import torch
 import matplotlib.pyplot as plt
 import gc
-import multiprocessing as mp
+import argparse
+import json
+import subprocess
+import sys
+import os
 
 from snntorch._neurons.leaky import Leaky
 from snntorch._neurons.stateleaky import StateLeaky
@@ -12,14 +16,16 @@ from tqdm import tqdm
 
 # Sweep configurations: (batch_size, channels)
 SWEEP_CONFIGS = [
-    (100, 100),
+    # (100, 100),
+    (20, 80),
+    (10, 40),
     (10, 20),
     (1, 5),
 ]
-N_RUNS = 1
+N_RUNS = 40
 
 # Same timestep schedule as baseline
-TIMESTEPS = np.logspace(1, 5, num=10, dtype=int)
+TIMESTEPS = np.logspace(1, 5.2, num=10, dtype=int)
 
 device = "cuda:1"
 torch.set_grad_enabled(True)
@@ -120,93 +126,7 @@ def bench_stateleaky(
 
 
 # ------------------------------
-# Worker: run benchmarks for one config
-# ------------------------------
-
-
-def run_config(cfg):
-    batch_size, channels = cfg
-    results_infer = dict(
-        batch_size=batch_size,
-        channels=channels,
-        times_leaky=[],
-        times_state=[],
-        mems_leaky=[],
-        mems_state=[],
-    )
-    results_train = dict(
-        batch_size=batch_size,
-        channels=channels,
-        times_leaky=[],
-        times_state=[],
-        mems_leaky=[],
-        mems_state=[],
-    )
-
-    for steps in tqdm(TIMESTEPS, desc=f"B{batch_size}-C{channels}"):
-
-        # --- Inference ---
-        t1_runs, m1_runs, t2_runs, m2_runs = [], [], [], []
-
-        for _ in range(N_RUNS):
-            torch.cuda.synchronize()
-            torch.cuda.reset_peak_memory_stats(device)
-            base1 = get_cur_bytes(device)
-            t1 = bench_leaky(int(steps), batch_size, channels, train=False)
-            peak1 = get_peak_bytes(device)
-            d1 = max(0, peak1 - base1) / 1024**2
-
-            torch.cuda.synchronize()
-            torch.cuda.reset_peak_memory_stats(device)
-            base2 = get_cur_bytes(device)
-            t2 = bench_stateleaky(
-                int(steps), batch_size, channels, train=False
-            )
-            peak2 = get_peak_bytes(device)
-            d2 = max(0, peak2 - base2) / 1024**2
-
-            t1_runs.append(t1)
-            m1_runs.append(d1)
-            t2_runs.append(t2)
-            m2_runs.append(d2)
-
-        results_infer["times_leaky"].append(np.mean(t1_runs))
-        results_infer["times_state"].append(np.mean(t2_runs))
-        results_infer["mems_leaky"].append(np.mean(m1_runs))
-        results_infer["mems_state"].append(np.mean(m2_runs))
-
-        # --- Training ---
-        t1_runs, m1_runs, t2_runs, m2_runs = [], [], [], []
-        for _ in range(N_RUNS):
-            torch.cuda.synchronize()
-            torch.cuda.reset_peak_memory_stats(device)
-            base1 = get_cur_bytes(device)
-            t1 = bench_leaky(int(steps), batch_size, channels, train=True)
-            peak1 = get_peak_bytes(device)
-            d1 = max(0, peak1 - base1) / 1024**2
-
-            torch.cuda.synchronize()
-            torch.cuda.reset_peak_memory_stats(device)
-            base2 = get_cur_bytes(device)
-            t2 = bench_stateleaky(int(steps), batch_size, channels, train=True)
-            peak2 = get_peak_bytes(device)
-            d2 = max(0, peak2 - base2) / 1024**2
-
-            t1_runs.append(t1)
-            m1_runs.append(d1)
-            t2_runs.append(t2)
-            m2_runs.append(d2)
-
-        results_train["times_leaky"].append(np.mean(t1_runs))
-        results_train["times_state"].append(np.mean(t2_runs))
-        results_train["mems_leaky"].append(np.mean(m1_runs))
-        results_train["mems_state"].append(np.mean(m2_runs))
-
-    return results_infer, results_train
-
-
-# ------------------------------
-# Worker: run all configs for a single RUN (one process)
+# Worker: run all configs for a single RUN
 # ------------------------------
 
 
@@ -237,7 +157,7 @@ def run_all_configs_one_run(run_idx: int):
         for steps in tqdm(
             TIMESTEPS, desc=f"RUN{run_idx} B{batch_size}-C{channels}"
         ):
-            # --- Inference (single measurement per run) ---
+            # --- Inference ---
             torch.cuda.synchronize()
             torch.cuda.reset_peak_memory_stats(device)
             base1 = get_cur_bytes(device)
@@ -259,7 +179,7 @@ def run_all_configs_one_run(run_idx: int):
             results_infer["mems_leaky"].append(d1)
             results_infer["mems_state"].append(d2)
 
-            # --- Training (single measurement per run) ---
+            # --- Training ---
             torch.cuda.synchronize()
             torch.cuda.reset_peak_memory_stats(device)
             base1 = get_cur_bytes(device)
@@ -286,89 +206,85 @@ def run_all_configs_one_run(run_idx: int):
 
 
 # ------------------------------
-# Main
+# Entry point
 # ------------------------------
 
 if __name__ == "__main__":
-    ctx = mp.get_context("spawn")
-    with ctx.Pool(processes=1, maxtasksperchild=1) as pool:
-        run_indices = list(range(N_RUNS))
-        run_results = pool.map(run_all_configs_one_run, run_indices)
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--worker", action="store_true", help="Run worker mode"
+    )
+    parser.add_argument("--run-idx", type=int, default=0)
+    parser.add_argument("--output", type=str, default=None)
+    args = parser.parse_args()
 
-    # Aggregate across runs (mean over N_RUNS) for each config and timestep
-    num_cfgs = len(SWEEP_CONFIGS)
+    if args.worker:
+        # Worker mode: run benchmarks and dump JSON
+        infer, train = run_all_configs_one_run(args.run_idx)
+        out = {"infer": infer, "train": train}
+        if args.output:
+            with open(args.output, "w") as f:
+                json.dump(out, f)
+        else:
+            print(json.dumps(out))
+        sys.exit(0)
+
+    # Main mode: launch workers
     results_infer = []
     results_train = []
 
-    for cfg_idx in range(num_cfgs):
-        # Collect lists across runs for this config index
-        times_leaky_runs_inf = [
-            run_results[r][0][cfg_idx]["times_leaky"] for r in range(N_RUNS)
+    for run_idx in range(N_RUNS):
+        outfile = f"results_run{run_idx}.json"
+        cmd = [
+            sys.executable,
+            __file__,
+            "--worker",
+            "--run-idx",
+            str(run_idx),
+            "--output",
+            outfile,
         ]
-        times_state_runs_inf = [
-            run_results[r][0][cfg_idx]["times_state"] for r in range(N_RUNS)
-        ]
-        mems_leaky_runs_inf = [
-            run_results[r][0][cfg_idx]["mems_leaky"] for r in range(N_RUNS)
-        ]
-        mems_state_runs_inf = [
-            run_results[r][0][cfg_idx]["mems_state"] for r in range(N_RUNS)
-        ]
+        subprocess.run(cmd, check=True)
 
-        times_leaky_runs_trn = [
-            run_results[r][1][cfg_idx]["times_leaky"] for r in range(N_RUNS)
-        ]
-        times_state_runs_trn = [
-            run_results[r][1][cfg_idx]["times_state"] for r in range(N_RUNS)
-        ]
-        mems_leaky_runs_trn = [
-            run_results[r][1][cfg_idx]["mems_leaky"] for r in range(N_RUNS)
-        ]
-        mems_state_runs_trn = [
-            run_results[r][1][cfg_idx]["mems_state"] for r in range(N_RUNS)
-        ]
+        with open(outfile, "r") as f:
+            data = json.load(f)
+        infer, train = data["infer"], data["train"]
 
-        batch_size, channels = SWEEP_CONFIGS[cfg_idx]
+        if run_idx == 0:
+            results_infer = [dict(cfg) for cfg in infer]
+            results_train = [dict(cfg) for cfg in train]
+        else:
+            for cfg_idx in range(len(SWEEP_CONFIGS)):
+                for k in [
+                    "times_leaky",
+                    "times_state",
+                    "mems_leaky",
+                    "mems_state",
+                ]:
+                    results_infer[cfg_idx][k] = (
+                        np.array(results_infer[cfg_idx][k])
+                        + np.array(infer[cfg_idx][k])
+                    ).tolist()
+                    results_train[cfg_idx][k] = (
+                        np.array(results_train[cfg_idx][k])
+                        + np.array(train[cfg_idx][k])
+                    ).tolist()
 
-        # Inference aggregated
-        results_infer.append(
-            dict(
-                batch_size=batch_size,
-                channels=channels,
-                times_leaky=np.mean(
-                    np.stack(times_leaky_runs_inf, axis=0), axis=0
-                ).tolist(),
-                times_state=np.mean(
-                    np.stack(times_state_runs_inf, axis=0), axis=0
-                ).tolist(),
-                mems_leaky=np.mean(
-                    np.stack(mems_leaky_runs_inf, axis=0), axis=0
-                ).tolist(),
-                mems_state=np.mean(
-                    np.stack(mems_state_runs_inf, axis=0), axis=0
-                ).tolist(),
-            )
-        )
-
-        # Training aggregated
-        results_train.append(
-            dict(
-                batch_size=batch_size,
-                channels=channels,
-                times_leaky=np.mean(
-                    np.stack(times_leaky_runs_trn, axis=0), axis=0
-                ).tolist(),
-                times_state=np.mean(
-                    np.stack(times_state_runs_trn, axis=0), axis=0
-                ).tolist(),
-                mems_leaky=np.mean(
-                    np.stack(mems_leaky_runs_trn, axis=0), axis=0
-                ).tolist(),
-                mems_state=np.mean(
-                    np.stack(mems_state_runs_trn, axis=0), axis=0
-                ).tolist(),
-            )
-        )
+    # Average across runs
+    if N_RUNS > 1:
+        for cfg_idx in range(len(SWEEP_CONFIGS)):
+            for k in [
+                "times_leaky",
+                "times_state",
+                "mems_leaky",
+                "mems_state",
+            ]:
+                results_infer[cfg_idx][k] = (
+                    np.array(results_infer[cfg_idx][k]) / N_RUNS
+                ).tolist()
+                results_train[cfg_idx][k] = (
+                    np.array(results_train[cfg_idx][k]) / N_RUNS
+                ).tolist()
 
     # ---- Plots ----
     fig, axes = plt.subplots(2, 2, figsize=(14, 12))
