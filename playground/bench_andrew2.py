@@ -18,14 +18,14 @@ from tqdm import tqdm
 SWEEP_CONFIGS = [
     # (100, 100),
     (20, 80),
-    (10, 40),
+    # (10, 40),
     (10, 20),
     (1, 5),
 ]
-N_RUNS = 6
+N_RUNS = 3
 
 # Same timestep schedule as baseline
-TIMESTEPS = np.logspace(1, 5.2, num=10, dtype=int)
+TIMESTEPS = np.logspace(1, 3.5, num=10, dtype=int)
 
 device = "cuda:1"
 torch.set_grad_enabled(True)
