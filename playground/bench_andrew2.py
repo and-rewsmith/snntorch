@@ -22,10 +22,10 @@ SWEEP_CONFIGS = [
     (10, 20),
     (1, 5),
 ]
-N_RUNS = 3
+N_RUNS = 20
 
 # Same timestep schedule as baseline
-TIMESTEPS = np.logspace(1, 3.5, num=10, dtype=int)
+TIMESTEPS = np.logspace(1, 5, num=10, dtype=int)
 
 device = "cuda:1"
 torch.set_grad_enabled(True)
@@ -101,8 +101,14 @@ def bench_stateleaky(
     else:
         ctx = torch.no_grad()
 
-    start_time = time.time()
+    # Warmup
+    lif.forward(input_tensor)
+    time.sleep(2)
+
     with ctx:
+        baseline_mem = get_cur_bytes(device)
+        time.sleep(2)
+        start_time = time.time()
         out = lif.forward(input_tensor)
 
         if train:
@@ -122,7 +128,7 @@ def bench_stateleaky(
     torch.cuda.synchronize()
     gc.collect()
     torch.cuda.empty_cache()
-    return end_time - start_time
+    return baseline_mem, end_time - start_time
 
 
 # ------------------------------
@@ -167,12 +173,11 @@ def run_all_configs_one_run(run_idx: int):
 
             torch.cuda.synchronize()
             torch.cuda.reset_peak_memory_stats(device)
-            base2 = get_cur_bytes(device)
-            t2 = bench_stateleaky(
+            baseline_mem, t2 = bench_stateleaky(
                 int(steps), batch_size, channels, train=False
             )
             peak2 = get_peak_bytes(device)
-            d2 = max(0, peak2 - base2) / 1024**2
+            d2 = max(0, peak2 - baseline_mem) / 1024**2
 
             results_infer["times_leaky"].append(t1)
             results_infer["times_state"].append(t2)
@@ -189,10 +194,11 @@ def run_all_configs_one_run(run_idx: int):
 
             torch.cuda.synchronize()
             torch.cuda.reset_peak_memory_stats(device)
-            base2 = get_cur_bytes(device)
-            t2 = bench_stateleaky(int(steps), batch_size, channels, train=True)
+            baseline_mem, t2 = bench_stateleaky(
+                int(steps), batch_size, channels, train=True
+            )
             peak2 = get_peak_bytes(device)
-            d2 = max(0, peak2 - base2) / 1024**2
+            d2 = max(0, peak2 - baseline_mem) / 1024**2
 
             results_train["times_leaky"].append(t1)
             results_train["times_state"].append(t2)
