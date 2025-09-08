@@ -3,10 +3,7 @@ import numpy as np
 import torch
 import matplotlib.pyplot as plt
 import gc
-import argparse
 import json
-import subprocess
-import sys
 import os
 
 from snntorch._neurons.leaky import Leaky
@@ -25,10 +22,29 @@ SWEEP_CONFIGS = [
 N_RUNS = 3
 
 # Same timestep schedule as baseline
-TIMESTEPS = np.logspace(1, 3.5, num=10, dtype=int)
+TIMESTEPS = np.logspace(1, 5, num=10, dtype=int)
 
 device = "cuda:1"
 torch.set_grad_enabled(True)
+torch.manual_seed(0)
+torch.cuda.manual_seed_all(0)
+try:
+    import torch.backends.cudnn as cudnn
+
+    cudnn.benchmark = False
+    cudnn.deterministic = True
+except Exception:
+    pass
+os.environ.setdefault("OMP_NUM_THREADS", "1")
+os.environ.setdefault("MKL_NUM_THREADS", "1")
+os.environ.setdefault("NUMEXPR_NUM_THREADS", "1")
+try:
+    torch.set_num_threads(1)
+    torch.set_num_interop_threads(1)
+except Exception:
+    pass
+
+REPEATS = 7
 
 
 def get_peak_bytes(cuda_device):
@@ -38,7 +54,6 @@ def get_peak_bytes(cuda_device):
 def get_cur_bytes(cuda_device):
     torch.cuda.synchronize()
     gc.collect()
-    torch.cuda.empty_cache()
     return torch.cuda.memory_allocated(cuda_device)
 
 
@@ -54,15 +69,22 @@ def bench_leaky(
 
     if train:
         ctx = torch.enable_grad()
-        x = torch.rand(num_steps, device=device, requires_grad=True)
+        x = torch.arange(1, num_steps + 1, device=device, dtype=torch.float32)
+        x.requires_grad_(True)
     else:
         ctx = torch.no_grad()
-        x = torch.rand(num_steps, device=device)
+        x = torch.arange(1, num_steps + 1, device=device, dtype=torch.float32)
 
     mem = torch.zeros(batch_size, channels, device=device)
     spk = torch.zeros(batch_size, channels, device=device)
 
-    start_time = time.time()
+    torch.cuda.synchronize()
+    gc_was_enabled = gc.isenabled()
+    if gc_was_enabled:
+        gc.disable()
+    start_evt = torch.cuda.Event(enable_timing=True)
+    end_evt = torch.cuda.Event(enable_timing=True)
+    start_evt.record()
     with ctx:
         for step_idx in range(num_steps):
             spk, mem = lif(x[step_idx], mem=mem)
@@ -75,25 +97,33 @@ def bench_leaky(
             if x.grad is not None:
                 x.grad = None
             del loss
-    end_time = time.time()
+    end_evt.record()
+    torch.cuda.synchronize()
+    elapsed_ms = start_evt.elapsed_time(end_evt)
+    if gc_was_enabled:
+        gc.enable()
 
     del lif, x, mem, spk
     torch.cuda.synchronize()
     gc.collect()
-    torch.cuda.empty_cache()
-    return end_time - start_time
+    return elapsed_ms / 1000.0
 
 
 def bench_stateleaky(
-    num_steps: int, batch_size: int, channels: int, train: bool = False
+    num_steps: int,
+    batch_size: int,
+    channels: int,
+    train: bool = False,
+    input_tensor: torch.Tensor | None = None,
 ) -> float:
     lif = StateLeaky(beta=0.9, channels=channels).to(device)
-    input_tensor = torch.arange(
-        1,
-        num_steps * batch_size * channels + 1,
-        device=device,
-        dtype=torch.float32,
-    ).view(num_steps, batch_size, channels)
+    if input_tensor is None:
+        input_tensor = torch.arange(
+            1,
+            num_steps * batch_size * channels + 1,
+            device=device,
+            dtype=torch.float32,
+        ).view(num_steps, batch_size, channels)
 
     if train:
         input_tensor.requires_grad_(True)
@@ -101,7 +131,13 @@ def bench_stateleaky(
     else:
         ctx = torch.no_grad()
 
-    start_time = time.time()
+    torch.cuda.synchronize()
+    gc_was_enabled = gc.isenabled()
+    if gc_was_enabled:
+        gc.disable()
+    start_evt = torch.cuda.Event(enable_timing=True)
+    end_evt = torch.cuda.Event(enable_timing=True)
+    start_evt.record()
     with ctx:
         out = lif.forward(input_tensor)
 
@@ -116,13 +152,16 @@ def bench_stateleaky(
                 input_tensor.grad = None
             del loss
 
-    end_time = time.time()
+    end_evt.record()
+    torch.cuda.synchronize()
+    elapsed_ms = start_evt.elapsed_time(end_evt)
+    if gc_was_enabled:
+        gc.enable()
 
     del lif, input_tensor, out
     torch.cuda.synchronize()
     gc.collect()
-    torch.cuda.empty_cache()
-    return end_time - start_time
+    return elapsed_ms / 1000.0
 
 
 # ------------------------------
@@ -154,22 +193,70 @@ def run_all_configs_one_run(run_idx: int):
             mems_state=[],
         )
 
+        # light warmup per config to stabilize kernels/allocator
+        max_steps = int(max(TIMESTEPS))
+        prealloc_state_input = torch.arange(
+            1,
+            max_steps * batch_size * channels + 1,
+            device=device,
+            dtype=torch.float32,
+        ).view(max_steps, batch_size, channels)
+        _ = bench_leaky(16, batch_size, channels, train=False)
+        _ = bench_stateleaky(
+            16,
+            batch_size,
+            channels,
+            train=False,
+            input_tensor=prealloc_state_input[:16],
+        )
+        _ = bench_leaky(16, batch_size, channels, train=True)
+        _ = bench_stateleaky(
+            16,
+            batch_size,
+            channels,
+            train=True,
+            input_tensor=prealloc_state_input[:16],
+        )
+
         for steps in tqdm(
             TIMESTEPS, desc=f"RUN{run_idx} B{batch_size}-C{channels}"
         ):
             # --- Inference ---
+            # timing with repeats; memory measured once separately
+            times = []
+            for _ in range(REPEATS):
+                tval = bench_leaky(
+                    int(steps), batch_size, channels, train=False
+                )
+                times.append(tval)
+            t1 = float(np.median(times))
             torch.cuda.synchronize()
             torch.cuda.reset_peak_memory_stats(device)
             base1 = get_cur_bytes(device)
-            t1 = bench_leaky(int(steps), batch_size, channels, train=False)
+            _ = bench_leaky(int(steps), batch_size, channels, train=False)
             peak1 = get_peak_bytes(device)
             d1 = max(0, peak1 - base1) / 1024**2
 
+            times = []
+            for _ in range(REPEATS):
+                tval = bench_stateleaky(
+                    int(steps),
+                    batch_size,
+                    channels,
+                    train=False,
+                    input_tensor=prealloc_state_input[: int(steps)],
+                )
+                times.append(tval)
+            t2 = float(np.median(times))
             torch.cuda.synchronize()
             torch.cuda.reset_peak_memory_stats(device)
             base2 = get_cur_bytes(device)
-            t2 = bench_stateleaky(
-                int(steps), batch_size, channels, train=False
+            _ = bench_stateleaky(
+                int(steps),
+                batch_size,
+                channels,
+                train=False,
+                input_tensor=prealloc_state_input[: int(steps)],
             )
             peak2 = get_peak_bytes(device)
             d2 = max(0, peak2 - base2) / 1024**2
@@ -180,17 +267,41 @@ def run_all_configs_one_run(run_idx: int):
             results_infer["mems_state"].append(d2)
 
             # --- Training ---
+            times = []
+            for _ in range(REPEATS):
+                tval = bench_leaky(
+                    int(steps), batch_size, channels, train=True
+                )
+                times.append(tval)
+            t1 = float(np.median(times))
             torch.cuda.synchronize()
             torch.cuda.reset_peak_memory_stats(device)
             base1 = get_cur_bytes(device)
-            t1 = bench_leaky(int(steps), batch_size, channels, train=True)
+            _ = bench_leaky(int(steps), batch_size, channels, train=True)
             peak1 = get_peak_bytes(device)
             d1 = max(0, peak1 - base1) / 1024**2
 
+            times = []
+            for _ in range(REPEATS):
+                tval = bench_stateleaky(
+                    int(steps),
+                    batch_size,
+                    channels,
+                    train=True,
+                    input_tensor=prealloc_state_input[: int(steps)],
+                )
+                times.append(tval)
+            t2 = float(np.median(times))
             torch.cuda.synchronize()
             torch.cuda.reset_peak_memory_stats(device)
             base2 = get_cur_bytes(device)
-            t2 = bench_stateleaky(int(steps), batch_size, channels, train=True)
+            _ = bench_stateleaky(
+                int(steps),
+                batch_size,
+                channels,
+                train=True,
+                input_tensor=prealloc_state_input[: int(steps)],
+            )
             peak2 = get_peak_bytes(device)
             d2 = max(0, peak2 - base2) / 1024**2
 
@@ -210,26 +321,11 @@ def run_all_configs_one_run(run_idx: int):
 # ------------------------------
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    parser.add_argument(
-        "--worker", action="store_true", help="Run worker mode"
-    )
-    parser.add_argument("--run-idx", type=int, default=0)
-    parser.add_argument("--output", type=str, default=None)
-    args = parser.parse_args()
-
-    if args.worker:
-        # Worker mode: run benchmarks and dump JSON
-        infer, train = run_all_configs_one_run(args.run_idx)
-        out = {"infer": infer, "train": train}
-        if args.output:
-            with open(args.output, "w") as f:
-                json.dump(out, f)
-        else:
-            print(json.dumps(out))
-        sys.exit(0)
-
-    # Main mode: launch workers
+    # Hardcoded configuration that produced the smooth graph
+    os.environ.pop("SNN_ISOLATE", None)  # ensure non-isolated mode
+    N_RUNS = 3
+    REPEATS = 1
+    # Main mode: launch workers in-process
     METRIC_KEYS = [
         "times_leaky",
         "times_state",
@@ -247,21 +343,7 @@ if __name__ == "__main__":
     train_meta = None
 
     for run_idx in range(N_RUNS):
-        outfile = f"results_run{run_idx}.json"
-        cmd = [
-            sys.executable,
-            __file__,
-            "--worker",
-            "--run-idx",
-            str(run_idx),
-            "--output",
-            outfile,
-        ]
-        subprocess.run(cmd, check=True)
-
-        with open(outfile, "r") as f:
-            data = json.load(f)
-        infer, train = data["infer"], data["train"]
+        infer, train = run_all_configs_one_run(run_idx)
 
         if infer_sum is None:
             # initialize accumulators and metadata
