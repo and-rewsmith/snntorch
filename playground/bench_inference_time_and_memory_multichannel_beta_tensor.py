@@ -9,10 +9,6 @@ from tqdm import tqdm
 
 from snntorch._neurons.stateleaky import StateLeaky
 
-BATCH_SIZE = 10
-CHANNELS = 30
-BETA = 0.9
-TIMESTEPS = np.logspace(1, 5.85, num=10, dtype=int)
 
 if torch.cuda.is_available():
     device = torch.device("cuda")
@@ -21,6 +17,14 @@ elif getattr(torch.backends, "mps", None) and torch.backends.mps.is_available():
 else:
     device = torch.device("cpu")
 print(f'Device {device.type}')
+
+
+BATCH_SIZE = 10
+CHANNELS = 30
+TIMESTEPS = np.logspace(1, 5.85, num=10, dtype=int)
+# BETA = torch.full((CHANNELS,), 0.9, device=device)
+BETA = torch.linspace(0.75, 0.95, CHANNELS, device=device)
+
 
 def get_peak_memory(device):
     """Gets the peak GPU memory usage in MB."""
@@ -110,38 +114,38 @@ with torch.no_grad():
 
     # Time subplot
     ax_time.plot(TIMESTEPS, times1, "b-", label=f'Type 1 (StateLeaky)')
-    ax_time.plot(TIMESTEPS, times2, "r-", label=f'Type 2 (StateLeaky) with learnable beta')
+    ax_time.plot(TIMESTEPS, times2, "r-", label=f'Type 2 (StateLeaky) with learnable Beta')
     ax_time.set_xscale("log")
     ax_time.set_yscale("log")
     ax_time.grid(True, which="both", ls="-", alpha=0.2)
     ax_time.set_xlabel("Number of Timesteps")
     ax_time.set_ylabel("Time (seconds)")
-    ax_time.set_title(f'SNN Performance (Time) with beta={BETA}')
+    ax_time.set_title(f'SNN Performance (Time) with tensor Beta')
     ax_time.legend()
 
     # Memory subplot (Δpeak per run)
     ax_mem.plot(TIMESTEPS, mems1, "b-", label=f'Type 1 mem Δpeak')
-    ax_mem.plot(TIMESTEPS, mems2, "r-", label=f'Type 2 mem Δpeak with learnable beta')
+    ax_mem.plot(TIMESTEPS, mems2, "r-", label=f'Type 2 mem Δpeak with learnable Beta')
     ax_mem.set_xscale("log")
     ax_mem.set_yscale("log")
     ax_mem.grid(True, which="both", ls="-", alpha=0.2)
     ax_mem.set_xlabel("Number of Timesteps")
     ax_mem.set_ylabel("Δ Peak Allocated (MiB)")
-    ax_mem.set_title(f"SNN Memory (Incremental Peak per Run) with beta={BETA}")
+    ax_mem.set_title(f"SNN Memory (Incremental Peak per Run) with tensor Beta")
     ax_mem.legend()
 
     plt.tight_layout()
 
     # ---- Optional: print baselines/peaks to verify behavior ----
     print("\nBenchmark Results (Time):")
-    print("Timesteps | StateLeaky (s) | StateLeaky with learnable beta (s) | Ratio (T2/T1)")
+    print("Timesteps | StateLeaky (s) | StateLeaky with learnable Beta (s) | Ratio (T2/T1)")
     for i, steps in enumerate(TIMESTEPS):
         print(f"{int(steps):9d} | {times1[i]:9.4f} | {times2[i]:13.4f} | {times2[i]/times1[i]:10.2f}")
 
     print("\nBenchmark Results (Memory - Δpeak per run):")
-    print("Timesteps | StateLeaky ΔMiB | StateLeaky with learnable beta ΔMiB | Ratio (T2/T1)")
+    print("Timesteps | StateLeaky ΔMiB | StateLeaky with learnable Beta ΔMiB | Ratio (T2/T1)")
     for i, steps in enumerate(TIMESTEPS):
         r = mems2[i] / mems1[i] if mems1[i] else float("inf")
         print(f"{int(steps):9d} | {mems1[i]:10.4f} | {mems2[i]:16.4f} | {r:10.2f}")
 
-    fig.savefig("snn_performance_comparison.png", format="png")
+    fig.savefig("snn_performance_comparison_tenosr_Beta.png", format="png")
