@@ -10,7 +10,7 @@ from tqdm import tqdm
 from snntorch._neurons.stateleaky import StateLeaky
 
 BATCH_SIZE = 10
-CHANNELS = 20
+CHANNELS = 30
 BETA = 0.9
 TIMESTEPS = np.logspace(1, 5.85, num=10, dtype=int)
 
