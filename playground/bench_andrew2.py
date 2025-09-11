@@ -16,7 +16,7 @@ from tqdm import tqdm
 
 # Sweep configurations: (batch_size, channels)
 SWEEP_CONFIGS = [
-    (128, 1024),
+    (20, 512),
     # (128, 1024),
     # (64, 1024),
     # (20, 80),
@@ -27,8 +27,8 @@ SWEEP_CONFIGS = [
 N_RUNS = 1
 
 # Same timestep schedule as baseline
-TIMESTEPS = np.logspace(1, 4, num=10, dtype=int)[::2]
-BATCHWISE_CHUNK_SIZE = 5
+TIMESTEPS = np.logspace(1, 5, num=10, dtype=int)[::2]
+BATCHWISE_CHUNK_SIZE = 10
 
 
 device = "cuda:1"
@@ -105,10 +105,13 @@ def bench_stateleaky(
     else:
         ctx = torch.no_grad()
 
+    # Linear projection: hidden_dim -> hidden_dim, no bias
+    linear = torch.nn.Linear(channels, channels, bias=False).to(device)
+
     # Warmup
     warm_steps = min(num_steps, 2)
     warm_bs = min(batch_size, 1)
-    lif.forward(input_tensor[:warm_steps, :warm_bs, :])
+    lif.forward(linear(input_tensor[:warm_steps, :warm_bs, :]))
     time.sleep(2)
 
     with ctx:
@@ -119,7 +122,7 @@ def bench_stateleaky(
         total_loss = None if train else None
         for b_start in range(0, batch_size, BATCHWISE_CHUNK_SIZE):
             b_end = min(b_start + BATCHWISE_CHUNK_SIZE, batch_size)
-            out_chunk = lif.forward(input_tensor[:, b_start:b_end, :])
+            out_chunk = lif.forward(linear(input_tensor[:, b_start:b_end, :]))
             out = out_chunk
 
             if train:
@@ -136,13 +139,15 @@ def bench_stateleaky(
 
         if train:
             total_loss.backward()
+            if linear.weight.grad is not None:
+                linear.weight.grad = None
             if input_tensor.grad is not None:
                 input_tensor.grad = None
             del total_loss
 
     end_time = time.time()
 
-    del lif, input_tensor, out
+    del lif, linear, input_tensor, out
     torch.cuda.synchronize()
     gc.collect()
     torch.cuda.empty_cache()
