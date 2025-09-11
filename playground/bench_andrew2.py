@@ -16,16 +16,20 @@ from tqdm import tqdm
 
 # Sweep configurations: (batch_size, channels)
 SWEEP_CONFIGS = [
-    # (100, 100),
-    (20, 80),
-    # (10, 40),
-    (10, 20),
-    (1, 5),
+    (128, 1024),
+    # (128, 1024),
+    # (64, 1024),
+    # (20, 80),
+    # # (10, 40),
+    # (10, 20),
+    # (1, 5),
 ]
-N_RUNS = 20
+N_RUNS = 1
 
 # Same timestep schedule as baseline
-TIMESTEPS = np.logspace(1, 5, num=10, dtype=int)
+TIMESTEPS = np.logspace(1, 4, num=10, dtype=int)[::2]
+BATCHWISE_CHUNK_SIZE = 5
+
 
 device = "cuda:1"
 torch.set_grad_enabled(True)
@@ -96,31 +100,45 @@ def bench_stateleaky(
     ).view(num_steps, batch_size, channels)
 
     if train:
-        input_tensor.requires_grad_(True)
+        input_tensor.requires_grad_(False)
         ctx = torch.enable_grad()
     else:
         ctx = torch.no_grad()
 
     # Warmup
-    lif.forward(input_tensor)
+    warm_steps = min(num_steps, 2)
+    warm_bs = min(batch_size, 1)
+    lif.forward(input_tensor[:warm_steps, :warm_bs, :])
     time.sleep(2)
 
     with ctx:
         baseline_mem = get_cur_bytes(device)
         time.sleep(2)
         start_time = time.time()
-        out = lif.forward(input_tensor)
+        out = None
+        total_loss = None if train else None
+        for b_start in range(0, batch_size, BATCHWISE_CHUNK_SIZE):
+            b_end = min(b_start + BATCHWISE_CHUNK_SIZE, batch_size)
+            out_chunk = lif.forward(input_tensor[:, b_start:b_end, :])
+            out = out_chunk
+
+            if train:
+                if isinstance(out_chunk, tuple):
+                    spk_chunk, mem_chunk = out_chunk
+                    chunk_loss = spk_chunk.sum() + mem_chunk.sum()
+                else:
+                    chunk_loss = out_chunk.sum()
+                total_loss = (
+                    chunk_loss
+                    if total_loss is None
+                    else total_loss + chunk_loss
+                )
 
         if train:
-            if isinstance(out, tuple):
-                spk, mem = out
-                loss = spk.sum() + mem.sum()
-            else:
-                loss = out.sum()
-            loss.backward()
+            total_loss.backward()
             if input_tensor.grad is not None:
                 input_tensor.grad = None
-            del loss
+            del total_loss
 
     end_time = time.time()
 
