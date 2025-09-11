@@ -56,12 +56,22 @@ def bench_leaky(
 ) -> float:
     lif = Leaky(beta=0.9).to(device)
 
+    # Create per-timestep inputs with shape [T, B, C]
+    input_tensor = torch.arange(
+        1,
+        num_steps * batch_size * channels + 1,
+        device=device,
+        dtype=torch.float32,
+    ).view(num_steps, batch_size, channels)
+
     if train:
+        input_tensor.requires_grad_(False)
         ctx = torch.enable_grad()
-        x = torch.rand(num_steps, device=device, requires_grad=True)
     else:
         ctx = torch.no_grad()
-        x = torch.rand(num_steps, device=device)
+
+    # Linear projection: channels -> channels, no bias
+    linear = torch.nn.Linear(channels, channels, bias=False).to(device)
 
     mem = torch.zeros(batch_size, channels, device=device)
     spk = torch.zeros(batch_size, channels, device=device)
@@ -69,19 +79,22 @@ def bench_leaky(
     start_time = time.time()
     with ctx:
         for step_idx in range(num_steps):
-            spk, mem = lif(x[step_idx], mem=mem)
+            z = linear(input_tensor[step_idx])
+            spk, mem = lif(z, mem=mem)
             if train and step_idx < num_steps - 1:
                 mem = mem.detach()
 
         if train:
             loss = spk.sum() + mem.sum()
             loss.backward()
-            if x.grad is not None:
-                x.grad = None
+            if linear.weight.grad is not None:
+                linear.weight.grad = None
+            if input_tensor.grad is not None:
+                input_tensor.grad = None
             del loss
     end_time = time.time()
 
-    del lif, x, mem, spk
+    del lif, linear, input_tensor, mem, spk
     torch.cuda.synchronize()
     gc.collect()
     torch.cuda.empty_cache()
@@ -119,31 +132,31 @@ def bench_stateleaky(
         time.sleep(2)
         start_time = time.time()
         out = None
-        total_loss = None if train else None
+        # Gradient accumulation: backprop per chunk to avoid holding the whole graph
         for b_start in range(0, batch_size, BATCHWISE_CHUNK_SIZE):
             b_end = min(b_start + BATCHWISE_CHUNK_SIZE, batch_size)
             out_chunk = lif.forward(linear(input_tensor[:, b_start:b_end, :]))
-            out = out_chunk
-
             if train:
                 if isinstance(out_chunk, tuple):
                     spk_chunk, mem_chunk = out_chunk
                     chunk_loss = spk_chunk.sum() + mem_chunk.sum()
                 else:
                     chunk_loss = out_chunk.sum()
-                total_loss = (
-                    chunk_loss
-                    if total_loss is None
-                    else total_loss + chunk_loss
-                )
+                # Backward per chunk to accumulate gradients without storing all chunk graphs
+                chunk_loss.backward()
+                # Drop references to free graph memory
+                del chunk_loss
+                out = None
+            else:
+                # Keep last inference output (not used, but mirrors previous behavior)
+                out = out_chunk
 
         if train:
-            total_loss.backward()
+            # Cleanup accumulated grads
             if linear.weight.grad is not None:
                 linear.weight.grad = None
             if input_tensor.grad is not None:
                 input_tensor.grad = None
-            del total_loss
 
     end_time = time.time()
 
