@@ -9,6 +9,8 @@ import subprocess
 import sys
 import os
 
+from profilehooks import profile
+
 from snntorch._neurons.leaky import Leaky
 from snntorch._neurons.stateleaky import StateLeaky
 from tqdm import tqdm
@@ -16,16 +18,16 @@ from tqdm import tqdm
 
 # Sweep configurations: (batch_size, channels)
 SWEEP_CONFIGS = [
-    (128, 256),
+    # (128, 256),
     (64, 256),
-    (32, 256),
+    # (32, 256),
 ]
-N_RUNS = 10
+N_RUNS = 1
 
 # Same timestep schedule as baseline
 # TIMESTEPS = np.logspace(1, 5, num=10, dtype=int)
-TIMESTEPS = np.logspace(1, 5, num=10, dtype=int)[::2]
-BATCHWISE_CHUNK_SIZE = 32
+TIMESTEPS = np.logspace(1, 4, num=10, dtype=int)[::2]
+BATCHWISE_CHUNK_SIZE = 64
 
 
 device = "cuda:1"
@@ -73,16 +75,28 @@ def bench_leaky(
     mem = torch.zeros(batch_size, channels, device=device)
     spk = torch.zeros(batch_size, channels, device=device)
 
+    # warmup
+    lif.forward(linear(input_tensor[:2, :2, :]))
+    time.sleep(2)
+
+    baseline_mem = get_cur_bytes(device)
+
     start_time = time.time()
     with ctx:
+        spk_steps = []
         for step_idx in range(num_steps):
             z = linear(input_tensor[step_idx])
             spk, mem = lif(z, mem=mem)
+            spk_steps.append(spk)
             if train and step_idx < num_steps - 1:
                 mem = mem.detach()
 
+        # Stack spikes across time: [T, B, C]
+        spk_out = torch.stack(spk_steps, dim=0)
+
         if train:
-            loss = spk.sum() + mem.sum()
+            # Use spk only
+            loss = spk_out.sum()
             loss.backward()
             if linear.weight.grad is not None:
                 linear.weight.grad = None
@@ -91,13 +105,14 @@ def bench_leaky(
             del loss
     end_time = time.time()
 
-    del lif, linear, input_tensor, mem, spk
+    del lif, linear, input_tensor, mem, spk, spk_out
     torch.cuda.synchronize()
     gc.collect()
     torch.cuda.empty_cache()
-    return end_time - start_time
+    return baseline_mem, end_time - start_time
 
 
+# @profile(skip=True, stdout=False, filename="baseline.prof")
 def bench_stateleaky(
     num_steps: int, batch_size: int, channels: int, train: bool = False
 ) -> float:
@@ -123,15 +138,26 @@ def bench_stateleaky(
     linear = torch.nn.Linear(channels, channels, bias=False).to(device)
 
     # Warmup
-    warm_steps = min(num_steps, 2)
-    warm_bs = min(batch_size, 1)
-    lif.forward(linear(input_tensor[:warm_steps, :warm_bs, :]))
-    time.sleep(2)
+    # warm_steps = min(num_steps, 2)
+    # warm_bs = min(batch_size, 1)
+    # lif.forward(linear(input_tensor[:warm_steps, :warm_bs, :]))
+    # time.sleep(2)
 
     # ---- NEW: precompute linear over the whole tensor once ----
-    z_full = linear(input_tensor.view(-1, channels)).view(
-        num_steps, batch_size, channels
+    z_full = (
+        linear(input_tensor.view(-1, channels))
+        .view(num_steps, batch_size, channels)
+        .transpose(0, 1)
+        .contiguous()
+        .transpose(0, 1)
     )
+
+    # print("batch_size: ", batch_size)
+    # print("num_steps: ", num_steps)
+    # print("channels: ", channels)
+    # print("z_full.shape: ", z_full.shape)
+    # print("z_full.stride(): ", z_full.stride())
+
     if train:
         z_full.retain_grad()  # optional if you want grads on z_full
         z_full = z_full.detach()  # break from linear graph
@@ -141,40 +167,51 @@ def bench_stateleaky(
     compiled_forward = None
 
     def fused_forward(x):
-        return lif.forward(x)
+        spk, _mem = lif.forward(x)
+        return spk
 
-    # compiled_forward = torch.compile(fused_forward, dynamic=True)
-    compiled_forward = fused_forward
-    # Trigger compile ahead of timing to exclude compile overhead
-    with torch.no_grad():
-        _ = compiled_forward(z_full[:warm_steps, :warm_bs, :])
+    # # compiled_forward = torch.compile(fused_forward, dynamic=True)
+    # compiled_forward = fused_forward
+    # # Trigger compile ahead of timing to exclude compile overhead
+    # with torch.no_grad():
+    #     _ = compiled_forward(z_full[:warm_steps, :warm_bs, :])
     torch.cuda.synchronize()
 
     with ctx:
         baseline_mem = get_cur_bytes(device)
         time.sleep(2)
         start_time = time.time()
-        out = None
+        # TODO: WAIT WAT DOIGN THIS AFTER TIMING AND ALL AT ONCE ALLOC??
+        # Accumulate full spikes across time: [T, B, C]
+        # spk_out = (
+        #     torch.zeros(num_steps, batch_size, channels, device=device)
+        #     .view(batch_size, num_steps, channels)
+        #     .contiguous()
+        #     .transpose(0, 1)
+        # )
         # Gradient accumulation: backprop per chunk to avoid holding the whole graph
         for b_start in range(0, batch_size, BATCHWISE_CHUNK_SIZE):
+            # lif.mem = lif.mem.detach()
             b_end = min(b_start + BATCHWISE_CHUNK_SIZE, batch_size)
-            # ---- use precomputed linear + contiguous slice ----
-            x_chunk = z_full[b_start:b_end, :, :].transpose(0, 1)
-            out_chunk = compiled_forward(x_chunk)
+            # Use precomputed linear; keep layout [T, B_chunk, C]
+            x_chunk = z_full[:, b_start:b_end, :]
+            spk_chunk = fused_forward(x_chunk)
+
+            # print shape and stride of x_chunk
+            # print("x_chunk.shape: ", x_chunk.shape)
+            # print("x_chunk.stride(): ", x_chunk.stride())
+            # # print shape and stride of spk_chunk
+            # print("spk_chunk.shape: ", spk_chunk.shape)
+            # print("spk_chunk.stride(): ", spk_chunk.stride())
+            # input()
+
+            # Store spikes into the full output tensor
+            # spk_out[:, b_start:b_end, :] = spk_chunk
             if train:
-                if isinstance(out_chunk, tuple):
-                    spk_chunk, mem_chunk = out_chunk
-                    chunk_loss = spk_chunk.sum() + mem_chunk.sum()
-                else:
-                    chunk_loss = out_chunk.sum()
-                # Backward per chunk to accumulate gradients without storing all chunk graphs
+                # Backward per chunk on spk only
+                chunk_loss = spk_chunk.sum()
                 chunk_loss.backward()
-                # Drop references to free graph memory
                 del chunk_loss
-                out = None
-            else:
-                # Keep last inference output (not used, but mirrors previous behavior)
-                out = out_chunk
 
         if train:
             # Cleanup accumulated grads
@@ -185,7 +222,8 @@ def bench_stateleaky(
 
     end_time = time.time()
 
-    del lif, linear, input_tensor, z_full, out
+    del lif, linear, input_tensor, z_full
+    # del spk_out
     torch.cuda.synchronize()
     gc.collect()
     torch.cuda.empty_cache()
@@ -227,10 +265,11 @@ def run_all_configs_one_run(run_idx: int):
             # --- Inference ---
             torch.cuda.synchronize()
             torch.cuda.reset_peak_memory_stats(device)
-            base1 = get_cur_bytes(device)
-            t1 = bench_leaky(int(steps), batch_size, channels, train=False)
+            baseline_mem, t1 = bench_leaky(
+                int(steps), batch_size, channels, train=False
+            )
             peak1 = get_peak_bytes(device)
-            d1 = max(0, peak1 - base1) / 1024**2
+            d1 = max(0, peak1 - baseline_mem) / 1024**2
 
             torch.cuda.synchronize()
             torch.cuda.reset_peak_memory_stats(device)
@@ -248,10 +287,11 @@ def run_all_configs_one_run(run_idx: int):
             # --- Training ---
             torch.cuda.synchronize()
             torch.cuda.reset_peak_memory_stats(device)
-            base1 = get_cur_bytes(device)
-            t1 = bench_leaky(int(steps), batch_size, channels, train=True)
+            baseline_mem_leaky, t1 = bench_leaky(
+                int(steps), batch_size, channels, train=True
+            )
             peak1 = get_peak_bytes(device)
-            d1 = max(0, peak1 - base1) / 1024**2
+            d1 = max(0, peak1 - baseline_mem_leaky) / 1024**2
 
             torch.cuda.synchronize()
             torch.cuda.reset_peak_memory_stats(device)
