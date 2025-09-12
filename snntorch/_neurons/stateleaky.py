@@ -56,6 +56,7 @@ class StateLeaky(LIF):
 
         if self.output:
             self.spk = self.fire(self.mem) * self.graded_spikes_factor
+            # self.spk = self.spk.transpose(0, 1).contiguous().transpose(0, 1)
             return self.spk, self.mem
 
         else:
@@ -96,10 +97,10 @@ class StateLeaky(LIF):
         decay_filter = decay_filter.permute(1, 0).unsqueeze(1)
         assert decay_filter.shape == (channels, 1, num_steps)
 
-        conv_result = self.causal_conv1d(input_, decay_filter)
+        conv_result = self.causal_conv1d(input_, decay_filter).contiguous()
         assert conv_result.shape == (batch, channels, num_steps)
 
-        return conv_result.permute(2, 0, 1)  # return membrane potential trace
+        return conv_result.permute(2, 0, 1)
 
     def _tau_buffer(self, beta, learn_beta, channels):
         if not isinstance(beta, torch.Tensor):
@@ -119,7 +120,7 @@ class StateLeaky(LIF):
             self.tau = nn.Parameter(tau)
         else:
             self.register_buffer("tau", tau)
-    
+
     def causal_conv1d(self, input_tensor, kernel_tensor):
         # get dimensions
         batch_size, in_channels, num_steps = input_tensor.shape
@@ -135,9 +136,12 @@ class StateLeaky(LIF):
         flipped_kernel = torch.flip(kernel_tensor, dims=[-1])
 
         # perform convolution with the padded input (output length = num_steps length)
-        causal_conv_result = F.conv1d(padded_input, flipped_kernel, groups=in_channels)
+        causal_conv_result = F.conv1d(
+            padded_input, flipped_kernel, groups=in_channels
+        )
 
         return causal_conv_result
+
 
 # TODO: throw exceptions if calling subclass methods we don't want to use
 # fire_inhibition
