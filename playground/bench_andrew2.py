@@ -26,11 +26,19 @@ N_RUNS = 1
 
 # Same timestep schedule as baseline
 # TIMESTEPS = np.logspace(1, 5, num=10, dtype=int)
-TIMESTEPS = np.logspace(1, 3, num=10, dtype=int)[::2]
+TIMESTEPS = np.logspace(1, 4.2, num=10, dtype=int)[::2]
 BATCHWISE_CHUNK_SIZE = 32
 
+# Benchmark toggles
+USE_COMPILED = bool(int(os.getenv("SNN_USE_COMPILED", "0")))
+CACHE_DECAY = bool(int(os.getenv("SNN_CACHE_DECAY", "0")))
 
-device = "cuda:1"
+
+_env_device = os.getenv("SNN_DEVICE")
+if _env_device is not None:
+    device = _env_device
+else:
+    device = "cuda" if torch.cuda.is_available() else "cpu"
 torch.set_grad_enabled(True)
 
 
@@ -117,6 +125,8 @@ def bench_stateleaky(
     num_steps: int, batch_size: int, channels: int, train: bool = False
 ) -> float:
     lif = StateLeaky(beta=0.9, channels=channels).to(device)
+    # optionally enable decay-filter caching to avoid per-chunk recompute
+    lif.cache_decay_filter = CACHE_DECAY
     input_tensor = (
         torch.arange(
             1,
@@ -137,14 +147,23 @@ def bench_stateleaky(
     # Linear projection: hidden_dim -> hidden_dim, no bias
     linear = torch.nn.Linear(channels, channels, bias=False).to(device)
 
-    # ---- NEW: precompute linear over the whole tensor once ----
-    z_full = (
-        linear(input_tensor.view(-1, channels))
-        .view(num_steps, batch_size, channels)
-        .transpose(0, 1)
-        .contiguous()
-        .transpose(0, 1)
-    )
+    # ---- Precompute linear over the whole tensor once ----
+    # For inference runs, ensure this happens under no_grad to avoid autograd tracking
+    def precompute_linear(inp):
+        z = linear(inp.view(-1, channels))
+        z = (
+            z.view(num_steps, batch_size, channels)
+            .transpose(0, 1)
+            .contiguous()
+            .transpose(0, 1)
+        )
+        return z
+
+    if train:
+        z_full = precompute_linear(input_tensor)
+    else:
+        with torch.no_grad():
+            z_full = precompute_linear(input_tensor)
 
     # print("batch_size: ", batch_size)
     # print("num_steps: ", num_steps)
@@ -161,14 +180,28 @@ def bench_stateleaky(
         spk, _mem = lif.forward(x)
         return spk
 
-    # Try to compile a fused forward (lif-only on precomputed linear output)
-    compiled_forward = torch.compile(fused_forward, dynamic=True)
+    # Optionally compile a fused forward (lif-only on precomputed linear output)
+    if USE_COMPILED:
+        compiled_forward = torch.compile(fused_forward, dynamic=True)
+    else:
+        compiled_forward = fused_forward
 
-    # Trigger compile ahead of timing to exclude compile overhead
-    warm_steps = min(num_steps, 2)
-    warm_bs = min(batch_size, 1)
+    # Trigger compile ahead of timing to exclude compile overhead.
+    # Important: warm with the SAME shapes used during timing to avoid recompile in-loop.
     with torch.no_grad():
-        _ = compiled_forward(z_full[:warm_steps, :warm_bs, :])
+        if USE_COMPILED:
+            # Warm for all batch chunk widths that will be used
+            bs_used = set()
+            for b_start in range(0, batch_size, BATCHWISE_CHUNK_SIZE):
+                b_end = min(b_start + BATCHWISE_CHUNK_SIZE, batch_size)
+                bs_used.add(b_end - b_start)
+            for bw in sorted(bs_used):
+                _ = compiled_forward(z_full[:, :bw, :])
+        else:
+            # Light touch warmup to ensure kernels are initialized
+            warm_steps = min(num_steps, 2)
+            warm_bs = min(batch_size, 1)
+            _ = compiled_forward(z_full[:warm_steps, :warm_bs, :])
 
     torch.cuda.synchronize()
 
@@ -195,7 +228,15 @@ def bench_stateleaky(
             b_end = min(b_start + BATCHWISE_CHUNK_SIZE, batch_size)
             # Use precomputed linear; keep layout [T, B_chunk, C]
             x_chunk = z_full[:, b_start:b_end, :]
-            spk_chunk = fused_forward(x_chunk)
+            # Debug grad state at first chunk
+            if chunks_processed == 1:
+                grad_enabled = torch.is_grad_enabled()
+                req_grad = x_chunk.requires_grad
+                has_gf = x_chunk.grad_fn is not None
+                print(
+                    f"[debug] train={train} compiled={USE_COMPILED} cache={CACHE_DECAY} grad_enabled={grad_enabled} requires_grad={req_grad} grad_fn={has_gf}"
+                )
+            spk_chunk = compiled_forward(x_chunk)
 
             # print shape and stride of x_chunk
             # print("x_chunk.shape: ", x_chunk.shape)

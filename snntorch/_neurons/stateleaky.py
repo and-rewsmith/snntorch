@@ -42,6 +42,10 @@ class StateLeaky(LIF):
         )
 
         self._tau_buffer(self.beta, learn_beta, channels)
+        # Optional cache for decay filter to avoid recomputation across batch chunks
+        self.cache_decay_filter = False
+        self._decay_cache_key = None
+        self._decay_filter_cached = None
 
     @property
     def beta(self):
@@ -64,32 +68,52 @@ class StateLeaky(LIF):
 
     def _base_state_function(self, input_):
         num_steps, batch, channels = input_.shape
-
-        # make the decay filter
-        time_steps = torch.arange(0, num_steps).to(input_.device)
-        assert time_steps.shape == (num_steps,)
-
-        # single channel case
-        if self.tau.shape == ():
-            decay_filter = (
-                torch.exp(-time_steps / self.tau.to(input_.device))
-                .unsqueeze(1)
-                .expand(num_steps, channels)
-            )
-            assert decay_filter.shape == (num_steps, channels)
-        # multichannel case
+        
+        # make (or reuse) the decay filter of shape (num_steps, channels)
+        device = input_.device
+        dtype = input_.dtype
+        cache_ok = (
+            self.cache_decay_filter
+            and not isinstance(self.tau, nn.Parameter)
+        )
+        cache_key = (
+            device,
+            dtype,
+            int(num_steps),
+            int(channels),
+            tuple(self.tau.shape),
+        )
+        if cache_ok and self._decay_cache_key == cache_key and self._decay_filter_cached is not None:
+            decay_filter = self._decay_filter_cached
         else:
-            # expand timesteps to be fo shape (num_steps, channels)
-            time_steps = time_steps.unsqueeze(1).expand(num_steps, channels)
-            # expand tau to be of shape (num_steps, channels)
-            tau = (
-                self.tau.unsqueeze(0)
-                .expand(num_steps, channels)
-                .to(input_.device)
-            )
-            # compute decay filter
-            decay_filter = torch.exp(-time_steps / tau)
-            assert decay_filter.shape == (num_steps, channels)
+            time_steps = torch.arange(0, num_steps, device=device, dtype=dtype)
+            assert time_steps.shape == (num_steps,)
+
+            # single channel case
+            if self.tau.shape == ():
+                decay_filter = (
+                    torch.exp(-time_steps / self.tau.to(device=device, dtype=dtype))
+                    .unsqueeze(1)
+                    .expand(num_steps, channels)
+                )
+                assert decay_filter.shape == (num_steps, channels)
+            # multichannel case
+            else:
+                # expand timesteps to be of shape (num_steps, channels)
+                time_steps = time_steps.unsqueeze(1).expand(num_steps, channels)
+                # expand tau to be of shape (num_steps, channels)
+                tau = (
+                    self.tau.to(device=device, dtype=dtype)
+                    .unsqueeze(0)
+                    .expand(num_steps, channels)
+                )
+                # compute decay filter
+                decay_filter = torch.exp(-time_steps / tau)
+                assert decay_filter.shape == (num_steps, channels)
+
+            if cache_ok:
+                self._decay_cache_key = cache_key
+                self._decay_filter_cached = decay_filter
 
         # prepare for convolution
         input_ = input_.permute(1, 2, 0)
