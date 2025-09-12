@@ -16,20 +16,16 @@ from tqdm import tqdm
 
 # Sweep configurations: (batch_size, channels)
 SWEEP_CONFIGS = [
-    (20, 64),
-    # (128, 1024),
-    # (64, 1024),
-    # (20, 80),
-    # # (10, 40),
-    # (10, 20),
-    # (1, 5),
+    (128, 256),
+    (64, 256),
+    (32, 256),
 ]
-N_RUNS = 2
+N_RUNS = 10
 
 # Same timestep schedule as baseline
 # TIMESTEPS = np.logspace(1, 5, num=10, dtype=int)
-TIMESTEPS = np.logspace(1, 6, num=10, dtype=int)[::2]
-BATCHWISE_CHUNK_SIZE = 10
+TIMESTEPS = np.logspace(1, 5, num=10, dtype=int)[::2]
+BATCHWISE_CHUNK_SIZE = 32
 
 
 device = "cuda:1"
@@ -106,12 +102,16 @@ def bench_stateleaky(
     num_steps: int, batch_size: int, channels: int, train: bool = False
 ) -> float:
     lif = StateLeaky(beta=0.9, channels=channels).to(device)
-    input_tensor = torch.arange(
-        1,
-        num_steps * batch_size * channels + 1,
-        device=device,
-        dtype=torch.float32,
-    ).view(num_steps, batch_size, channels)
+    input_tensor = (
+        torch.arange(
+            1,
+            num_steps * batch_size * channels + 1,
+            device=device,
+            dtype=torch.float32,
+        )
+        .view(batch_size, num_steps, channels)
+        .contiguous()
+    )
 
     if train:
         input_tensor.requires_grad_(False)
@@ -159,7 +159,7 @@ def bench_stateleaky(
         for b_start in range(0, batch_size, BATCHWISE_CHUNK_SIZE):
             b_end = min(b_start + BATCHWISE_CHUNK_SIZE, batch_size)
             # ---- use precomputed linear + contiguous slice ----
-            x_chunk = z_full[:, b_start:b_end, :]
+            x_chunk = z_full[b_start:b_end, :, :].transpose(0, 1)
             out_chunk = compiled_forward(x_chunk)
             if train:
                 if isinstance(out_chunk, tuple):
