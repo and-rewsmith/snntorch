@@ -3,6 +3,7 @@ from torch import nn
 from torch.nn import functional as F
 from profilehooks import profile
 from .neurons import LIF
+from torch.autograd import Function
 
 
 class StateLeaky(LIF):
@@ -46,6 +47,10 @@ class StateLeaky(LIF):
         self.cache_decay_filter = False
         self._decay_cache_key = None
         self._decay_filter_cached = None
+        # Training-time option: detach temporal dependency between steps (no BPTT)
+        # When True and module in training mode, use a step-wise recurrence with
+        # mem detached at every step (matches baseline Leaky training semantics).
+        self.detach_time = False
 
     @property
     def beta(self):
@@ -53,7 +58,14 @@ class StateLeaky(LIF):
 
     # @profile(skip=False, stdout=False, filename="baseline.prof")
     def forward(self, input_):
-        self.mem = self._base_state_function(input_)
+        # Training-time detachment: compute mem via conv without tracking,
+        # then pass gradients straight-through per time step to inputs.
+        if self.training and self.detach_time:
+            with torch.no_grad():
+                mem_ng = self._base_state_function_conv(input_)
+            self.mem = _PerStepPassThrough.apply(input_, mem_ng)
+        else:
+            self.mem = self._base_state_function(input_)
 
         if self.state_quant:
             self.mem = self.state_quant(self.mem)
@@ -68,6 +80,9 @@ class StateLeaky(LIF):
 
     def _base_state_function(self, input_):
         num_steps, batch, channels = input_.shape
+        # In training with temporal detachment requested, use step-wise path
+        if self.training and self.detach_time:
+            return self._base_state_function_step_detach(input_)
         
         # make (or reuse) the decay filter of shape (num_steps, channels)
         device = input_.device
@@ -126,6 +141,100 @@ class StateLeaky(LIF):
 
         return conv_result.permute(2, 0, 1)
 
+    def _base_state_function_conv(self, input_):
+        # Pure conv path, independent of training flags
+        num_steps, batch, channels = input_.shape
+        device = input_.device
+        dtype = input_.dtype
+
+        # make (or reuse) the decay filter of shape (num_steps, channels)
+        cache_ok = (
+            self.cache_decay_filter
+            and not isinstance(self.tau, nn.Parameter)
+        )
+        cache_key = (
+            device,
+            dtype,
+            int(num_steps),
+            int(channels),
+            tuple(self.tau.shape),
+        )
+        if cache_ok and self._decay_cache_key == cache_key and self._decay_filter_cached is not None:
+            decay_filter = self._decay_filter_cached
+        else:
+            time_steps = torch.arange(0, num_steps, device=device, dtype=dtype)
+            assert time_steps.shape == (num_steps,)
+
+            if self.tau.shape == ():
+                decay_filter = (
+                    torch.exp(-time_steps / self.tau.to(device=device, dtype=dtype))
+                    .unsqueeze(1)
+                    .expand(num_steps, channels)
+                )
+                assert decay_filter.shape == (num_steps, channels)
+            else:
+                time_steps = time_steps.unsqueeze(1).expand(num_steps, channels)
+                tau = (
+                    self.tau.to(device=device, dtype=dtype)
+                    .unsqueeze(0)
+                    .expand(num_steps, channels)
+                )
+                decay_filter = torch.exp(-time_steps / tau)
+                assert decay_filter.shape == (num_steps, channels)
+
+            if cache_ok:
+                self._decay_cache_key = cache_key
+                self._decay_filter_cached = decay_filter
+
+        # prepare for convolution
+        inp = input_.permute(1, 2, 0)
+        assert inp.shape == (batch, channels, num_steps)
+        k = decay_filter.permute(1, 0).unsqueeze(1)
+        assert k.shape == (channels, 1, num_steps)
+
+        conv_result = self.causal_conv1d(inp, k).contiguous()
+        assert conv_result.shape == (batch, channels, num_steps)
+
+        return conv_result.permute(2, 0, 1)
+
+    def _base_state_function_step_detach(self, input_):
+        # input_: (T, B, C)
+        num_steps, batch, channels = input_.shape
+        assert input_.shape == (num_steps, batch, channels)
+
+        device = input_.device
+        dtype = input_.dtype
+
+        # decay per step: exp(-1/tau) to mirror convolution kernel exp(-t/tau)
+        tau = self.tau.to(device=device, dtype=dtype)
+        if tau.shape == ():
+            decay = torch.exp(-1.0 / tau)
+            assert decay.shape == ()
+        else:
+            assert tau.shape == (channels,)
+            decay = torch.exp(-1.0 / tau)
+            assert decay.shape == (channels,)
+
+        mem = torch.zeros(batch, channels, device=device, dtype=dtype)
+        assert mem.shape == (batch, channels)
+
+        mem_steps = []
+        for t in range(num_steps):
+            x_t = input_[t]
+            assert x_t.shape == (batch, channels)
+            if decay.shape == ():
+                mem = decay * mem + x_t
+            else:
+                mem = decay.unsqueeze(0) * mem + x_t
+            assert mem.shape == (batch, channels)
+            mem_steps.append(mem)
+            # Detach temporal dependency to avoid BPTT across time
+            mem = mem.detach()
+
+        mem_seq = torch.stack(mem_steps, dim=0)
+        assert mem_seq.shape == (num_steps, batch, channels)
+        return mem_seq
+
     def _tau_buffer(self, beta, learn_beta, channels):
         if not isinstance(beta, torch.Tensor):
             beta = torch.as_tensor(beta)
@@ -165,6 +274,20 @@ class StateLeaky(LIF):
         )
 
         return causal_conv_result
+
+
+class _PerStepPassThrough(Function):
+    @staticmethod
+    def forward(ctx, inp, mem_ng):
+        # Return precomputed membrane (no-grad), but remember nothing
+        return mem_ng
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        # Route gradients straight-through to inputs per time-step; no grad for mem_ng
+        return grad_output, None
+
+        
 
 
 # TODO: throw exceptions if calling subclass methods we don't want to use

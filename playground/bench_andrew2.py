@@ -26,7 +26,7 @@ N_RUNS = 1
 
 # Same timestep schedule as baseline
 # TIMESTEPS = np.logspace(1, 5, num=10, dtype=int)
-TIMESTEPS = np.logspace(1, 4.2, num=10, dtype=int)[::2]
+TIMESTEPS = np.logspace(1, 5, num=10, dtype=int)[::2]
 BATCHWISE_CHUNK_SIZE = 32
 
 # Benchmark toggles
@@ -125,8 +125,8 @@ def bench_stateleaky(
     num_steps: int, batch_size: int, channels: int, train: bool = False
 ) -> float:
     lif = StateLeaky(beta=0.9, channels=channels).to(device)
-    # optionally enable decay-filter caching to avoid per-chunk recompute
-    lif.cache_decay_filter = CACHE_DECAY
+    lif.cache_decay_filter = False  # keep cache off; focus on training knee
+    lif.detach_time = bool(train)   # avoid BPTT-like cost during training
     input_tensor = (
         torch.arange(
             1,
