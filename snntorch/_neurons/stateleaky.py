@@ -49,18 +49,18 @@ class StateLeaky(LIF):
 
     # @profile(skip=False, stdout=False, filename="baseline.prof")
     def forward(self, input_):
-        self.mem = self._base_state_function(input_)
+        mem = self._base_state_function(input_)
 
         if self.state_quant:
-            self.mem = self.state_quant(self.mem)
+            mem = self.state_quant(mem)
 
         if self.output:
-            self.spk = self.fire(self.mem) * self.graded_spikes_factor
+            self.spk = self.fire(mem) * self.graded_spikes_factor
             # self.spk = self.spk.transpose(0, 1).contiguous().transpose(0, 1)
-            return self.spk, self.mem
+            return self.spk, mem
 
         else:
-            return self.mem
+            return mem
 
     def _base_state_function(self, input_):
         num_steps, batch, channels = input_.shape
@@ -79,7 +79,7 @@ class StateLeaky(LIF):
             assert decay_filter.shape == (num_steps, channels)
         # multichannel case
         else:
-            # expand timesteps to be fo shape (num_steps, channels)
+            # expand timesteps to be of shape (num_steps, channels)
             time_steps = time_steps.unsqueeze(1).expand(num_steps, channels)
             # expand tau to be of shape (num_steps, channels)
             tau = (
@@ -96,6 +96,13 @@ class StateLeaky(LIF):
         assert input_.shape == (batch, channels, num_steps)
         decay_filter = decay_filter.permute(1, 0).unsqueeze(1)
         assert decay_filter.shape == (channels, 1, num_steps)
+
+        # check contiguous
+        input_ = input_.contiguous()
+        decay_filter = decay_filter.contiguous()
+        # print(f"input_.is_contiguous(): {input_.is_contiguous()}")
+        # print(f"decay_filter.is_contiguous(): {decay_filter.is_contiguous()}")
+        # input()
 
         conv_result = self.causal_conv1d(input_, decay_filter).contiguous()
         assert conv_result.shape == (batch, channels, num_steps)

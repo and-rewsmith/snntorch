@@ -27,7 +27,7 @@ N_RUNS = 1
 # Same timestep schedule as baseline
 # TIMESTEPS = np.logspace(1, 5, num=10, dtype=int)
 TIMESTEPS = np.logspace(1, 4, num=10, dtype=int)
-BATCHWISE_CHUNK_SIZE = 32
+BATCHWISE_CHUNK_SIZE = 64
 
 
 device = "cuda:1"
@@ -122,6 +122,7 @@ def bench_leaky(
 def bench_stateleaky(
     num_steps: int, batch_size: int, channels: int, train: bool = False
 ) -> float:
+    # define lif and input
     lif = StateLeaky(beta=0.9, channels=channels).to(device)
     input_tensor = (
         torch.arange(
@@ -133,121 +134,93 @@ def bench_stateleaky(
         .view(batch_size, num_steps, channels)
         .contiguous()
     )
+    input_tensor.requires_grad_(False)
 
+    # define context
     if train:
-        input_tensor.requires_grad_(False)
         ctx = torch.enable_grad()
     else:
         ctx = torch.no_grad()
 
-    # Linear projection: hidden_dim -> hidden_dim, no bias
+    # define linear
     linear = torch.nn.Linear(channels, channels, bias=False).to(device)
 
-    # ---- NEW: precompute linear over the whole tensor once ----
-    # z_full = (
-    #     linear(input_tensor.view(-1, channels))
-    #     .view(num_steps, batch_size, channels)
-    #     .transpose(0, 1)
-    #     .contiguous()
-    #     .transpose(0, 1)
-    # )
-
-    # print("batch_size: ", batch_size)
-    # print("num_steps: ", num_steps)
-    # print("channels: ", channels)
-    # print("z_full.shape: ", z_full.shape)
-    # print("z_full.stride(): ", z_full.stride())
-
-    # if train:
-    #     # z_full.retain_grad()  # optional if you want grads on z_full
-    #     # z_full = z_full.detach()  # break from linear graph
-    #     # z_full.requires_grad_(True)
-
-    def fused_forward(x):
-        spk, _mem = lif.forward(x)
-        return spk
-
-    # Try to compile a fused forward (lif-only on precomputed linear output)
-    compiled_forward = torch.compile(fused_forward, dynamic=True)
-
-    # Trigger compile ahead of timing to exclude compile overhead
-    # warm_steps = min(num_steps, 2)
-    # warm_bs = min(batch_size, 1)
-    # with torch.no_grad():
-    #     _ = compiled_forward(z_full[:warm_steps, :warm_bs, :])
-
+    # make sure cuda is synchronized
     torch.cuda.synchronize()
 
     with ctx:
+        # setup
         baseline_mem = get_cur_bytes(device)
         time.sleep(2)
         start_event = torch.cuda.Event(enable_timing=True)
         end_event = torch.cuda.Event(enable_timing=True)
         torch.cuda.synchronize()
+
+        # record start event
         start_event.record()
         start_time = time.time()
 
-        # commented out until we stabilize timing
-        #
-        # Accumulate full spikes across time: [T, B, C]
-        # spk_out = (
-        #     torch.zeros(num_steps, batch_size, channels, device=device)
-        #     .view(batch_size, num_steps, channels)
-        #     .contiguous()
-        #     .transpose(0, 1)
-        # )
-
-        # Gradient accumulation: backprop per chunk to avoid holding the whole graph
         chunks_processed = 0
+        log = False
         for b_start in range(0, batch_size, BATCHWISE_CHUNK_SIZE):
+            if num_steps > 8000 and log:
+                torch.cuda.synchronize()
+                inc_time = time.time()
+                print(f"inc_time: {inc_time - start_time}")
             chunks_processed += 1
-            # lif.mem = lif.mem.detach()
+
+            # chunked forward
+            # will materialize in the output view
             b_end = min(b_start + BATCHWISE_CHUNK_SIZE, batch_size)
-            # Use precomputed linear; keep layout [T, B_chunk, C]
-            # x_chunk = z_full[:, b_start:b_end, :]
+            z_chunk = (
+                linear(input_tensor[b_start:b_end, :, :].view(-1, channels))
+                .view(b_end - b_start, num_steps, channels)
+                .contiguous()
+            )
+            z_chunk = z_chunk.transpose(0, 1)
+            if num_steps > 8000 and log:
+                torch.cuda.synchronize()
+                inc_time = time.time()
+                print(f"postlinear_time: {inc_time - start_time}")
+                print(f"z_chunk.shape: {z_chunk.shape}")
+                print(f"z_chunk.stride(): {z_chunk.stride()}")
 
-            z_chunk = linear(
-                input_tensor[b_start:b_end, :, :].view(-1, channels)
-            ).view(num_steps, b_end - b_start, channels)
+            # forward
+            # stride doesn't seem to matter
+            if num_steps > 8000 and log:
+                torch.cuda.synchronize()
+                inc_time = time.time()
+                print(f"preforward_time: {inc_time - start_time}")
+            spk_chunk, _ = lif.forward(z_chunk)
+            if num_steps > 8000 and log:
+                torch.cuda.synchronize()
+                inc_time = time.time()
+                print(f"postforward_time: {inc_time - start_time}")
 
-            # z_chunk = linear(
-            #     input_tensor[b_start:b_end, :, :].view(-1, channels)
-            # ).view(b_end - b_start, num_steps, channels)
-            # print("z_chunk.shape: ", z_chunk.shape)
-            # print("z_chunk.stride(): ", z_chunk.stride())
-            # z_chunk = z_chunk.transpose(0, 1)
-            # print("z_chunk.shape: ", z_chunk.shape)
-            # print("z_chunk.stride(): ", z_chunk.stride())
-            # input()
-
-            spk_chunk = fused_forward(z_chunk)
-
-            # print shape and stride of x_chunk
-            # print("x_chunk.shape: ", x_chunk.shape)
-            # print("x_chunk.stride(): ", x_chunk.stride())
-            # # print shape and stride of spk_chunk
-            # print("spk_chunk.shape: ", spk_chunk.shape)
-            # print("spk_chunk.stride(): ", spk_chunk.stride())
-            # input()
-
-            # commented out until we stabilize timing
-            #
-            # Store spikes into the full output tensor
-            # spk_out[:, b_start:b_end, :] = spk_chunk
-
+            # backwards w/ grad accum
             if train:
-                # Backward per chunk on spk only
                 chunk_loss = spk_chunk.sum()
                 chunk_loss.backward()
                 del chunk_loss
+            if num_steps > 8000 and log:
+                torch.cuda.synchronize()
+                inc_time = time.time()
+                print(f"postbackward_time: {inc_time - start_time}")
 
+        # zero grads
         if train:
-            # Cleanup accumulated grads
             if linear.weight.grad is not None:
                 linear.weight.grad = None
             if input_tensor.grad is not None:
                 input_tensor.grad = None
 
+    if num_steps > 8000 and log:
+        torch.cuda.synchronize()
+        inc_time = time.time()
+        print(f"end_time: {inc_time - start_time}")
+        input()
+
+    # end timer
     end_event.record()
     end_event.synchronize()
     torch.cuda.synchronize()
@@ -255,10 +228,8 @@ def bench_stateleaky(
 
     print(f"chunks_processed: {chunks_processed}")
 
+    # clean up
     del lif, linear, input_tensor, z_chunk
-    # commented out until we stabilize timing
-    # del spk_out
-
     torch.cuda.synchronize()
     gc.collect()
     torch.cuda.empty_cache()
