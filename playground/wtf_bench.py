@@ -5,7 +5,9 @@ import sys
 import torch
 
 
-def time_stateleaky_direct(T: int, B: int, C: int, chunk: int, device: str, train: bool):
+def time_stateleaky_direct(
+    T: int, B: int, C: int, chunk: int, device: str, train: bool
+):
     """Accurate GPU timing of StateLeaky using CUDA events.
     Returns a dict with per-scenario GPU/Wall timings and per-chunk breakdown.
     """
@@ -18,8 +20,11 @@ def time_stateleaky_direct(T: int, B: int, C: int, chunk: int, device: str, trai
 
     lif = StateLeaky(beta=0.9, channels=C).to(device)
     x = torch.randn(T, B, C, device=device)
-    if train:
-        x.requires_grad_(True)
+    linear = torch.nn.Linear(C, C, bias=False).to(device)
+    assert linear.weight.requires_grad, "Weights must require grad"
+
+    # if train:
+    #     x.requires_grad_(True)
 
     def timed_call(x_in):
         start = end = None
@@ -29,7 +34,7 @@ def time_stateleaky_direct(T: int, B: int, C: int, chunk: int, device: str, trai
             torch.cuda.synchronize()
             start.record()
         t0 = time.time()
-        spk, mem = lif.forward(x_in)
+        spk, mem = lif.forward(linear(x_in))
         if train:
             loss = spk.sum()
             loss.backward()
@@ -38,7 +43,9 @@ def time_stateleaky_direct(T: int, B: int, C: int, chunk: int, device: str, trai
             end.record()
             end.synchronize()
         t1 = time.time()
-        gpu_ms = start.elapsed_time(end) if start is not None else (t1 - t0) * 1e3
+        gpu_ms = (
+            start.elapsed_time(end) if start is not None else (t1 - t0) * 1e3
+        )
         wall_ms = (t1 - t0) * 1e3
         return gpu_ms, wall_ms
 
@@ -73,7 +80,9 @@ def time_stateleaky_direct(T: int, B: int, C: int, chunk: int, device: str, trai
     return results
 
 
-def time_stateleaky_bench(T: int, B: int, C: int, chunk: int, device: str, train: bool):
+def time_stateleaky_bench(
+    T: int, B: int, C: int, chunk: int, device: str, train: bool
+):
     """Call the existing bench function for comparison, using its signature.
     Do not modify the bench; set globals then call.
     """
@@ -81,7 +90,9 @@ def time_stateleaky_bench(T: int, B: int, C: int, chunk: int, device: str, train
         import playground.bench_andrew2 as b
     except ModuleNotFoundError:
         # Fallback when run as a script: add repo root to sys.path
-        repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+        repo_root = os.path.abspath(
+            os.path.join(os.path.dirname(__file__), "..")
+        )
         sys.path.insert(0, repo_root)
         import playground.bench_andrew2 as b  # type: ignore
 
@@ -96,6 +107,78 @@ def time_stateleaky_bench(T: int, B: int, C: int, chunk: int, device: str, train
     return t
 
 
+def time_leaky_direct(T: int, B: int, C: int, device: str, train: bool):
+    """Accurate GPU timing of Leaky (baseline) using CUDA events.
+    Leaky is not chunked: runs across time for the full batch.
+    Returns a dict with only the big-chunk timing.
+    """
+    from snntorch._neurons.leaky import Leaky
+
+    if device.startswith("cuda"):
+        assert torch.cuda.is_available(), "CUDA not available"
+        torch.cuda.set_device(device)
+        torch.cuda.synchronize()
+
+    lif = Leaky(beta=0.9).to(device)
+    linear = torch.nn.Linear(C, C, bias=False).to(device)
+    x = torch.randn(T, B, C, device=device)
+    assert linear.weight.requires_grad, "Weights must require grad"
+
+    def time_loop(x_in):
+        if device.startswith("cuda"):
+            start = torch.cuda.Event(enable_timing=True)
+            end = torch.cuda.Event(enable_timing=True)
+            torch.cuda.synchronize()
+            start.record()
+        t0 = time.time()
+        mem = torch.zeros(x_in.shape[1], C, device=device)
+        spk_steps = []
+        for t in range(x_in.shape[0]):
+            z = linear(x_in[t])
+            spk, mem = lif(z, mem=mem)
+            spk_steps.append(spk)
+        spk_out = torch.stack(spk_steps, dim=0)
+        if train:
+            loss = spk_out.sum()
+            loss.backward()
+            del loss
+        if device.startswith("cuda"):
+            end.record()
+            end.synchronize()
+        t1 = time.time()
+        gpu_ms = (
+            start.elapsed_time(end)
+            if device.startswith("cuda")
+            else (t1 - t0) * 1e3
+        )
+        wall_ms = (t1 - t0) * 1e3
+        return gpu_ms, wall_ms
+
+    big_gpu, big_wall = time_loop(x)
+    return {"big": {"gpu_ms": big_gpu, "wall_ms": big_wall}}
+
+
+def time_leaky_bench(T: int, B: int, C: int, device: str, train: bool):
+    try:
+        import playground.bench_andrew2 as b
+    except ModuleNotFoundError:
+        repo_root = os.path.abspath(
+            os.path.join(os.path.dirname(__file__), "..")
+        )
+        sys.path.insert(0, repo_root)
+        import playground.bench_andrew2 as b  # type: ignore
+
+    b.device = device
+    # Leaky is not chunked; no need to set chunk size
+
+    if device.startswith("cuda"):
+        torch.cuda.set_device(device)
+        torch.cuda.synchronize()
+
+    mem, t = b.bench_leaky(T, B, C, train=train)
+    return t
+
+
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("--device", type=str, default="cuda:0")
@@ -103,7 +186,9 @@ def main():
     p.add_argument("--B", type=int, default=64)
     p.add_argument("--C", type=int, default=256)
     p.add_argument("--chunk", type=int, default=32)
-    p.add_argument("--no-train", action="store_true", help="Only run inference")
+    p.add_argument(
+        "--no-train", action="store_true", help="Only run inference"
+    )
     p.add_argument("--no-infer", action="store_true", help="Only run training")
     args = p.parse_args()
 
@@ -118,6 +203,20 @@ def main():
 
     # Inference
     if not args.no_infer:
+        print("\n=== Inference (Leaky direct, CUDA events) ===")
+        res_leaky_inf = time_leaky_direct(
+            args.T, args.B, args.C, args.device, train=False
+        )
+        print(
+            f"Big chunk:    GPU {res_leaky_inf['big']['gpu_ms']:.2f} ms, Wall {res_leaky_inf['big']['wall_ms']:.2f} ms"
+        )
+
+        print("\n=== Inference (bench_andrew2.bench_leaky) ===")
+        t_bench_leaky_big = time_leaky_bench(
+            args.T, args.B, args.C, args.device, train=False
+        )
+        print(f"bench big chunk reported: {t_bench_leaky_big:.6f} s")
+
         print("\n=== Inference (StateLeaky direct, CUDA events) ===")
         res_inf = time_stateleaky_direct(
             args.T, args.B, args.C, args.chunk, args.device, train=False
@@ -147,6 +246,20 @@ def main():
 
     # Training
     if not args.no_train:
+        print("\n=== Training (Leaky direct, CUDA events) ===")
+        res_leaky_tr = time_leaky_direct(
+            args.T, args.B, args.C, args.device, train=True
+        )
+        print(
+            f"Big chunk:    GPU {res_leaky_tr['big']['gpu_ms']:.2f} ms, Wall {res_leaky_tr['big']['wall_ms']:.2f} ms"
+        )
+
+        print("\n=== Training (bench_andrew2.bench_leaky) ===")
+        t_bench_leaky_big = time_leaky_bench(
+            args.T, args.B, args.C, args.device, train=True
+        )
+        print(f"bench big chunk reported: {t_bench_leaky_big:.6f} s")
+
         print("\n=== Training (StateLeaky direct, CUDA events) ===")
         res_tr = time_stateleaky_direct(
             args.T, args.B, args.C, args.chunk, args.device, train=True
@@ -186,4 +299,3 @@ def time_stateleky_bench_safe(T, B, C, chunk, device, train):
 
 if __name__ == "__main__":
     main()
-

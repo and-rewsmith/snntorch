@@ -26,7 +26,7 @@ N_RUNS = 1
 
 # Same timestep schedule as baseline
 # TIMESTEPS = np.logspace(1, 5, num=10, dtype=int)
-TIMESTEPS = np.logspace(1, 4.1, num=10, dtype=int)[::2]
+TIMESTEPS = np.logspace(1, 4, num=10, dtype=int)
 BATCHWISE_CHUNK_SIZE = 32
 
 
@@ -92,8 +92,8 @@ def bench_leaky(
             z = linear(input_tensor[step_idx])
             spk, mem = lif(z, mem=mem)
             spk_steps.append(spk)
-            if train and step_idx < num_steps - 1:
-                mem = mem.detach()
+            # if train and step_idx < num_steps - 1:
+            #     mem = mem.detach()
 
         # Stack spikes across time: [T, B, C]
         spk_out = torch.stack(spk_steps, dim=0)
@@ -144,13 +144,13 @@ def bench_stateleaky(
     linear = torch.nn.Linear(channels, channels, bias=False).to(device)
 
     # ---- NEW: precompute linear over the whole tensor once ----
-    z_full = (
-        linear(input_tensor.view(-1, channels))
-        .view(num_steps, batch_size, channels)
-        .transpose(0, 1)
-        .contiguous()
-        .transpose(0, 1)
-    )
+    # z_full = (
+    #     linear(input_tensor.view(-1, channels))
+    #     .view(num_steps, batch_size, channels)
+    #     .transpose(0, 1)
+    #     .contiguous()
+    #     .transpose(0, 1)
+    # )
 
     # print("batch_size: ", batch_size)
     # print("num_steps: ", num_steps)
@@ -158,10 +158,10 @@ def bench_stateleaky(
     # print("z_full.shape: ", z_full.shape)
     # print("z_full.stride(): ", z_full.stride())
 
-    if train:
-        z_full.retain_grad()  # optional if you want grads on z_full
-        z_full = z_full.detach()  # break from linear graph
-        z_full.requires_grad_(True)
+    # if train:
+    #     # z_full.retain_grad()  # optional if you want grads on z_full
+    #     # z_full = z_full.detach()  # break from linear graph
+    #     # z_full.requires_grad_(True)
 
     def fused_forward(x):
         spk, _mem = lif.forward(x)
@@ -171,10 +171,10 @@ def bench_stateleaky(
     compiled_forward = torch.compile(fused_forward, dynamic=True)
 
     # Trigger compile ahead of timing to exclude compile overhead
-    warm_steps = min(num_steps, 2)
-    warm_bs = min(batch_size, 1)
-    with torch.no_grad():
-        _ = compiled_forward(z_full[:warm_steps, :warm_bs, :])
+    # warm_steps = min(num_steps, 2)
+    # warm_bs = min(batch_size, 1)
+    # with torch.no_grad():
+    #     _ = compiled_forward(z_full[:warm_steps, :warm_bs, :])
 
     torch.cuda.synchronize()
 
@@ -204,8 +204,23 @@ def bench_stateleaky(
             # lif.mem = lif.mem.detach()
             b_end = min(b_start + BATCHWISE_CHUNK_SIZE, batch_size)
             # Use precomputed linear; keep layout [T, B_chunk, C]
-            x_chunk = z_full[:, b_start:b_end, :]
-            spk_chunk = fused_forward(x_chunk)
+            # x_chunk = z_full[:, b_start:b_end, :]
+
+            z_chunk = linear(
+                input_tensor[b_start:b_end, :, :].view(-1, channels)
+            ).view(num_steps, b_end - b_start, channels)
+
+            # z_chunk = linear(
+            #     input_tensor[b_start:b_end, :, :].view(-1, channels)
+            # ).view(b_end - b_start, num_steps, channels)
+            # print("z_chunk.shape: ", z_chunk.shape)
+            # print("z_chunk.stride(): ", z_chunk.stride())
+            # z_chunk = z_chunk.transpose(0, 1)
+            # print("z_chunk.shape: ", z_chunk.shape)
+            # print("z_chunk.stride(): ", z_chunk.stride())
+            # input()
+
+            spk_chunk = fused_forward(z_chunk)
 
             # print shape and stride of x_chunk
             # print("x_chunk.shape: ", x_chunk.shape)
@@ -240,7 +255,7 @@ def bench_stateleaky(
 
     print(f"chunks_processed: {chunks_processed}")
 
-    del lif, linear, input_tensor, z_full
+    del lif, linear, input_tensor, z_chunk
     # commented out until we stabilize timing
     # del spk_out
 
