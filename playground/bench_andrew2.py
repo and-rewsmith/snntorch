@@ -19,15 +19,16 @@ from tqdm import tqdm
 # Sweep configurations: (batch_size, channels)
 SWEEP_CONFIGS = [
     # (128, 256),
-    (64, 256),
+    # (64, 256),
     # (32, 256),
+    (32, 32)
 ]
-N_RUNS = 1
+N_RUNS = 2
 
 # Same timestep schedule as baseline
 # TIMESTEPS = np.logspace(1, 5, num=10, dtype=int)
-TIMESTEPS = np.logspace(1, 4, num=10, dtype=int)
-BATCHWISE_CHUNK_SIZE = 64
+TIMESTEPS = np.logspace(1, 5, num=10, dtype=int)
+BATCHWISE_CHUNK_SIZE = 32
 
 
 device = "cuda:1"
@@ -131,7 +132,7 @@ def bench_stateleaky(
             device=device,
             dtype=torch.float32,
         )
-        .view(batch_size, num_steps, channels)
+        .view(batch_size, channels, num_steps)
         .contiguous()
     )
     input_tensor.requires_grad_(False)
@@ -172,12 +173,20 @@ def bench_stateleaky(
             # chunked forward
             # will materialize in the output view
             b_end = min(b_start + BATCHWISE_CHUNK_SIZE, batch_size)
-            z_chunk = (
-                linear(input_tensor[b_start:b_end, :, :].view(-1, channels))
-                .view(b_end - b_start, num_steps, channels)
-                .contiguous()
-            )
-            z_chunk = z_chunk.transpose(0, 1)
+            # z_chunk = (
+            #     linear(
+            #         input_tensor[b_start:b_end, :, :].view(-1, channels)
+            #     ).view(b_end - b_start, channels, num_steps)
+            #     # .contiguous()
+            # )
+            z_chunk = input_tensor[b_start:b_end, :, :]
+            # print(f"z_chunk.shape: {z_chunk.shape}")
+            # print(f"z_chunk.stride(): {z_chunk.stride()}")
+            # print(f"z_chunk.is_contiguous(): {z_chunk.is_contiguous()}")
+            # input()
+
+            if num_steps > 8000 and log:
+                print(f"z_chunk.is_contiguous(): {z_chunk.is_contiguous()}")
             if num_steps > 8000 and log:
                 torch.cuda.synchronize()
                 inc_time = time.time()

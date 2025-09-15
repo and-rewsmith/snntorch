@@ -63,7 +63,7 @@ class StateLeaky(LIF):
             return mem
 
     def _base_state_function(self, input_):
-        num_steps, batch, channels = input_.shape
+        batch, channels, num_steps = input_.shape
 
         # make the decay filter
         time_steps = torch.arange(0, num_steps).to(input_.device)
@@ -92,16 +92,16 @@ class StateLeaky(LIF):
             assert decay_filter.shape == (num_steps, channels)
 
         # prepare for convolution
-        input_ = input_.permute(1, 2, 0)
+        # input_ = input_.permute(1, 2, 0)
         assert input_.shape == (batch, channels, num_steps)
         decay_filter = decay_filter.permute(1, 0).unsqueeze(1)
         assert decay_filter.shape == (channels, 1, num_steps)
 
         # check contiguous
-        input_ = input_.contiguous()
-        decay_filter = decay_filter.contiguous()
-        # print(f"input_.is_contiguous(): {input_.is_contiguous()}")
-        # print(f"decay_filter.is_contiguous(): {decay_filter.is_contiguous()}")
+        # input_ = input_.contiguous()
+        # decay_filter = decay_filter.contiguous()
+        print(f"input_.is_contiguous(): {input_.is_contiguous()}")
+        print(f"decay_filter.is_contiguous(): {decay_filter.is_contiguous()}")
         # input()
 
         conv_result = self.causal_conv1d(input_, decay_filter).contiguous()

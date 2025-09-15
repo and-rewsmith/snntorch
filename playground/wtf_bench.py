@@ -34,7 +34,14 @@ def time_stateleaky_direct(
             torch.cuda.synchronize()
             start.record()
         t0 = time.time()
-        spk, mem = lif.forward(linear(x_in))
+        intermediate = linear(x_in)
+        intermediate = intermediate.permute(1, 2, 0)
+        assert intermediate.shape == (B, C, T) or intermediate.shape == (
+            chunk,
+            C,
+            T,
+        )
+        spk, mem = lif.forward(intermediate)
         if train:
             loss = spk.sum()
             loss.backward()
