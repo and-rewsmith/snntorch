@@ -19,15 +19,15 @@ from tqdm import tqdm
 # Sweep configurations: (batch_size, channels)
 SWEEP_CONFIGS = [
     # (128, 256),
-    # (64, 256),
+    (64, 256),
     # (32, 256),
-    (32, 32)
+    # (32, 32)
 ]
 N_RUNS = 2
 
 # Same timestep schedule as baseline
 # TIMESTEPS = np.logspace(1, 5, num=10, dtype=int)
-TIMESTEPS = np.logspace(1, 5, num=10, dtype=int)
+TIMESTEPS = np.logspace(1, 4, num=10, dtype=int)
 BATCHWISE_CHUNK_SIZE = 32
 
 
@@ -173,13 +173,13 @@ def bench_stateleaky(
             # chunked forward
             # will materialize in the output view
             b_end = min(b_start + BATCHWISE_CHUNK_SIZE, batch_size)
-            # z_chunk = (
-            #     linear(
-            #         input_tensor[b_start:b_end, :, :].view(-1, channels)
-            #     ).view(b_end - b_start, channels, num_steps)
-            #     # .contiguous()
-            # )
-            z_chunk = input_tensor[b_start:b_end, :, :]
+            z_chunk = (
+                linear(
+                    input_tensor[b_start:b_end, :, :].view(-1, channels)
+                ).view(b_end - b_start, channels, num_steps)
+                # .contiguous()
+            )
+            # z_chunk = input_tensor[b_start:b_end, :, :]
             # print(f"z_chunk.shape: {z_chunk.shape}")
             # print(f"z_chunk.stride(): {z_chunk.stride()}")
             # print(f"z_chunk.is_contiguous(): {z_chunk.is_contiguous()}")
@@ -278,7 +278,7 @@ def run_all_configs_one_run(run_idx: int):
         for steps in tqdm(
             TIMESTEPS, desc=f"RUN{run_idx} B{batch_size}-C{channels}"
         ):
-            # --- Inference ---
+            # # --- Inference ---
             torch.cuda.synchronize()
             torch.cuda.reset_peak_memory_stats(device)
             baseline_mem, t1 = bench_leaky(
@@ -300,7 +300,7 @@ def run_all_configs_one_run(run_idx: int):
             results_infer["mems_leaky"].append(d1)
             results_infer["mems_state"].append(d2)
 
-            # --- Training ---
+            # # --- Training ---
             torch.cuda.synchronize()
             torch.cuda.reset_peak_memory_stats(device)
             baseline_mem_leaky, t1 = bench_leaky(

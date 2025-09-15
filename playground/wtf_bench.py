@@ -27,13 +27,6 @@ def time_stateleaky_direct(
     #     x.requires_grad_(True)
 
     def timed_call(x_in):
-        start = end = None
-        if device.startswith("cuda"):
-            start = torch.cuda.Event(enable_timing=True)
-            end = torch.cuda.Event(enable_timing=True)
-            torch.cuda.synchronize()
-            start.record()
-        t0 = time.time()
         intermediate = linear(x_in)
         intermediate = intermediate.permute(1, 2, 0)
         assert intermediate.shape == (B, C, T) or intermediate.shape == (
@@ -41,11 +34,21 @@ def time_stateleaky_direct(
             C,
             T,
         )
+        intermediate = intermediate.contiguous()
+
+        start = end = None
+        if device.startswith("cuda"):
+            start = torch.cuda.Event(enable_timing=True)
+            end = torch.cuda.Event(enable_timing=True)
+            torch.cuda.synchronize()
+            start.record()
+
+        t0 = time.time()
         spk, mem = lif.forward(intermediate)
         if train:
             loss = spk.sum()
             loss.backward()
-            del loss
+            # del loss
         if device.startswith("cuda"):
             end.record()
             end.synchronize()
