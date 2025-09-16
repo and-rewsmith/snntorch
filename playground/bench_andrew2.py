@@ -45,7 +45,8 @@ def get_cur_bytes(cuda_device):
 def bench_leaky(
     num_steps: int, batch_size: int, channels: int, train: bool = False
 ) -> float:
-    lif = Leaky(beta=0.9).to(device)
+    beta = torch.full((channels,), 0.9).to(device)
+    lif = Leaky(beta=beta, learn_beta=True).to(device)
 
     # Create per-timestep inputs with shape [T, B, C]
     input_tensor = torch.arange(
@@ -113,7 +114,8 @@ def bench_stateleaky(
     num_steps: int, batch_size: int, channels: int, train: bool = False
 ) -> float:
     # define lif and input
-    lif = StateLeaky(beta=0.9, channels=channels).to(device)
+    beta = torch.full((channels,), 0.9).to(device)
+    lif = StateLeaky(beta=beta, channels=channels, learn_beta=True).to(device)
     input_tensor = (
         torch.arange(
             1,
