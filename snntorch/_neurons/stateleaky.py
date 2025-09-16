@@ -201,7 +201,8 @@ class StateLeaky(LIF):
         conv_result = self.causal_conv1d(input_, decay_filter)
         assert conv_result.shape == (batch, channels, num_steps)
 
-        return conv_result.permute(2, 0, 1)  # (num_steps, batch, channels)
+        # return conv_result.permute(2, 0, 1)  # (num_steps, batch, channels)
+        return conv_result
 
     # def _base_state_function(self, input_):
     #     batch, channels, num_steps = input_.shape

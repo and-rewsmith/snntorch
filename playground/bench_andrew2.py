@@ -1,7 +1,4 @@
 import time
-import numpy as np
-import torch
-import matplotlib.pyplot as plt
 import gc
 import argparse
 import json
@@ -10,24 +7,23 @@ import sys
 import os
 
 from profilehooks import profile
+from tqdm import tqdm
+import numpy as np
+import torch
+import matplotlib.pyplot as plt
 
 from snntorch._neurons.leaky import Leaky
 from snntorch._neurons.stateleaky import StateLeaky
-from tqdm import tqdm
 
 
 # Sweep configurations: (batch_size, channels)
 SWEEP_CONFIGS = [
-    # (128, 256),
     (64, 256),
-    # (32, 256),
-    # (32, 32)
 ]
-N_RUNS = 2
+N_RUNS = 10
 
 # Same timestep schedule as baseline
-# TIMESTEPS = np.logspace(1, 5, num=10, dtype=int)
-TIMESTEPS = np.logspace(1, 4, num=10, dtype=int)
+TIMESTEPS = np.logspace(1, 4.5, num=10, dtype=int)[::2]
 BATCHWISE_CHUNK_SIZE = 32
 
 
@@ -44,11 +40,6 @@ def get_cur_bytes(cuda_device):
     gc.collect()
     torch.cuda.empty_cache()
     return torch.cuda.memory_allocated(cuda_device)
-
-
-# ------------------------------
-# Benchmark kernels
-# ------------------------------
 
 
 def bench_leaky(
@@ -93,8 +84,6 @@ def bench_leaky(
             z = linear(input_tensor[step_idx])
             spk, mem = lif(z, mem=mem)
             spk_steps.append(spk)
-            # if train and step_idx < num_steps - 1:
-            #     mem = mem.detach()
 
         # Stack spikes across time: [T, B, C]
         spk_out = torch.stack(spk_steps, dim=0)
@@ -146,6 +135,21 @@ def bench_stateleaky(
     # define linear
     linear = torch.nn.Linear(channels, channels, bias=False).to(device)
 
+    def forward_wrapper(lif_input):
+        spk, mem = lif.forward(lif_input)
+        return spk, mem
+
+    # conduct a warmup on the lif
+    b_start = 0
+    b_end = min(b_start + BATCHWISE_CHUNK_SIZE, batch_size)
+    z_chunk = (
+        linear(
+            input_tensor[b_start:b_end, :, :].view(-1, channels)
+        ).view(b_end - b_start, channels, num_steps)
+        # .contiguous()
+    )
+    forward_wrapper(z_chunk)
+
     # make sure cuda is synchronized
     torch.cuda.synchronize()
 
@@ -177,13 +181,7 @@ def bench_stateleaky(
                 linear(
                     input_tensor[b_start:b_end, :, :].view(-1, channels)
                 ).view(b_end - b_start, channels, num_steps)
-                # .contiguous()
             )
-            # z_chunk = input_tensor[b_start:b_end, :, :]
-            # print(f"z_chunk.shape: {z_chunk.shape}")
-            # print(f"z_chunk.stride(): {z_chunk.stride()}")
-            # print(f"z_chunk.is_contiguous(): {z_chunk.is_contiguous()}")
-            # input()
 
             if num_steps > 8000 and log:
                 print(f"z_chunk.is_contiguous(): {z_chunk.is_contiguous()}")
@@ -200,7 +198,7 @@ def bench_stateleaky(
                 torch.cuda.synchronize()
                 inc_time = time.time()
                 print(f"preforward_time: {inc_time - start_time}")
-            spk_chunk, _ = lif.forward(z_chunk)
+            spk_chunk, _ = forward_wrapper(z_chunk)
             if num_steps > 8000 and log:
                 torch.cuda.synchronize()
                 inc_time = time.time()
@@ -244,11 +242,6 @@ def bench_stateleaky(
     torch.cuda.empty_cache()
 
     return baseline_mem, start_event.elapsed_time(end_event) / 1000.0
-
-
-# ------------------------------
-# Worker: run all configs for a single RUN
-# ------------------------------
 
 
 def run_all_configs_one_run(run_idx: int):
@@ -327,10 +320,6 @@ def run_all_configs_one_run(run_idx: int):
 
     return results_infer_all, results_train_all
 
-
-# ------------------------------
-# Entry point
-# ------------------------------
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
