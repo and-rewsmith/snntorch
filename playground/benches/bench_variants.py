@@ -84,18 +84,15 @@ def bench_leaky(
     start_event.record()
     start_time = time.time()
     with ctx:
-        spk_steps = []
+        spk_sum = torch.zeros(batch_size, channels, device=device)
         for step_idx in range(num_steps):
             z = linear(input_tensor[step_idx])
             spk, mem = lif(z, mem=mem)
-            spk_steps.append(spk)
-
-        # Stack spikes across time: [T, B, C]
-        spk_out = torch.stack(spk_steps, dim=0)
+            spk_sum += spk
 
         if train:
             # Use spk only
-            loss = spk_out.sum()
+            loss = spk_sum.sum()
             loss.backward()
             if linear.weight.grad is not None:
                 linear.weight.grad = None
@@ -106,7 +103,7 @@ def bench_leaky(
     end_event.synchronize()
     end_time = time.time()
 
-    del lif, linear, input_tensor, mem, spk, spk_out
+    del lif, linear, input_tensor, mem, spk, spk_sum
     torch.cuda.synchronize()
     gc.collect()
     torch.cuda.empty_cache()
