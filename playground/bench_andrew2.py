@@ -20,10 +20,10 @@ from snntorch._neurons.stateleaky import StateLeaky
 SWEEP_CONFIGS = [
     (64, 256),
 ]
-N_RUNS = 10
+N_RUNS = 2
 
 # Same timestep schedule as baseline
-TIMESTEPS = np.logspace(1, 4.5, num=10, dtype=int)[::2]
+TIMESTEPS = np.logspace(1, 4.5, num=10, dtype=int)[-5:]
 BATCHWISE_CHUNK_SIZE = 32
 
 
@@ -123,6 +123,7 @@ def bench_stateleaky(
         )
         .view(batch_size, channels, num_steps)
         .contiguous()
+        .permute(2, 0, 1)
     )
     input_tensor.requires_grad_(False)
 
@@ -143,9 +144,11 @@ def bench_stateleaky(
     b_start = 0
     b_end = min(b_start + BATCHWISE_CHUNK_SIZE, batch_size)
     z_chunk = (
-        linear(
-            input_tensor[b_start:b_end, :, :].view(-1, channels)
-        ).view(b_end - b_start, channels, num_steps)
+        linear(input_tensor[:, b_start:b_end, :].reshape(-1, channels)).view(
+            num_steps,
+            b_end - b_start,
+            channels,
+        )
         # .contiguous()
     )
     forward_wrapper(z_chunk)
@@ -177,11 +180,9 @@ def bench_stateleaky(
             # chunked forward
             # will materialize in the output view
             b_end = min(b_start + BATCHWISE_CHUNK_SIZE, batch_size)
-            z_chunk = (
-                linear(
-                    input_tensor[b_start:b_end, :, :].view(-1, channels)
-                ).view(b_end - b_start, channels, num_steps)
-            )
+            z_chunk = linear(
+                input_tensor[:, b_start:b_end, :].reshape(-1, channels)
+            ).view(num_steps, b_end - b_start, channels)
 
             if num_steps > 8000 and log:
                 print(f"z_chunk.is_contiguous(): {z_chunk.is_contiguous()}")
@@ -199,6 +200,7 @@ def bench_stateleaky(
                 inc_time = time.time()
                 print(f"preforward_time: {inc_time - start_time}")
             spk_chunk, _ = forward_wrapper(z_chunk)
+            assert spk_chunk.shape == (num_steps, b_end - b_start, channels)
             if num_steps > 8000 and log:
                 torch.cuda.synchronize()
                 inc_time = time.time()

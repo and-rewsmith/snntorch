@@ -170,7 +170,9 @@ class StateLeaky(LIF):
             return mem
 
     def _base_state_function(self, input_):
-        batch, channels, num_steps = input_.shape
+        num_steps, batch, channels = input_.shape
+        input_ = input_.permute(1, 2, 0)
+        assert input_.shape == (batch, channels, num_steps)
         device = input_.device
 
         # time axis shape (1, 1, num_steps)
@@ -201,8 +203,8 @@ class StateLeaky(LIF):
         conv_result = self.causal_conv1d(input_, decay_filter)
         assert conv_result.shape == (batch, channels, num_steps)
 
-        # return conv_result.permute(2, 0, 1)  # (num_steps, batch, channels)
-        return conv_result
+        return conv_result.permute(2, 0, 1)  # (num_steps, batch, channels)
+        # return conv_result
 
     # def _base_state_function(self, input_):
     #     batch, channels, num_steps = input_.shape
@@ -266,6 +268,8 @@ class StateLeaky(LIF):
         flipped_kernel = torch.flip(kernel_tensor, dims=[-1])
 
         # perform convolution with the padded input (output length = num_steps length)
+        # print(f"padded input contiguous: {padded_input.is_contiguous()}")
+        # print(f"flipped kernel contiguous: {flipped_kernel.is_contiguous()}")
         causal_conv_result = F.conv1d(
             padded_input, flipped_kernel, groups=in_channels
         )
