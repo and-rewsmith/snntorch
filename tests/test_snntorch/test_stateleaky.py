@@ -224,5 +224,30 @@ def test_multi_beta_forward(
     ), "learn_beta should be a learnable parameter"
 
 
+def test_chunking_with_gd():
+    batch_size = 256
+    chunk_size = 64
+    channels = 1000
+    timesteps = 1000
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+
+    beta = torch.full((channels,), 0.9).to(device)
+    lif = StateLeaky(beta=beta, channels=channels, learn_beta=False).to(device)
+
+    input_tensor = (
+        torch.arange(
+            1,
+            num_steps * batch_size * channels + 1,
+            device=device,
+            dtype=torch.float32,
+        )
+        .view(batch_size, channels, timesteps)
+        .contiguous()
+        .permute(2, 0, 1)
+    )
+
+    pass
+
+
 if __name__ == "__main__":
     pytest.main()
