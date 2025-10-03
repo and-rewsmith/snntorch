@@ -10,7 +10,6 @@ from torch.nn import functional as F
 
 
 def causal_conv1d(input_tensor, kernel_tensor):
-    # get dimensions
     batch_size, in_channels, num_steps = input_tensor.shape
     # kernel_tensor: (channels, 1, kernel_size)
     out_channels, _, kernel_size = kernel_tensor.shape
@@ -24,8 +23,6 @@ def causal_conv1d(input_tensor, kernel_tensor):
     flipped_kernel = torch.flip(kernel_tensor, dims=[-1])
 
     # perform convolution with the padded input (output length = num_steps length)
-    # print(f"padded input contiguous: {padded_input.is_contiguous()}")
-    # print(f"flipped kernel contiguous: {flipped_kernel.is_contiguous()}")
     causal_conv_result = F.conv1d(
         padded_input, flipped_kernel, groups=in_channels
     )

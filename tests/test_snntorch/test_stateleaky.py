@@ -20,32 +20,16 @@ Test Structure:
 2. Learning Parameter Tests:
     - Multi-beta learning (tests learn_beta=True)
 
+3. Chunking Tests:
+    - Tests chunking with gradients enabled
+
 Coverage:
 --------
 - Input/output shape consistency
 - Input value bounds (≤ 1)
 - Output activation (presence of values > 1)
 - Parameter learnability for learn_beta
-
-Limitations:
------------
-1. Does not test:
-   - Spike generation (output=True)
-   - Threshold learning (learn_threshold=True)
-   - State quantization (state_quant=True)
-   - Graded spike factor learning (learn_graded_spikes_factor=True)
-   - Surrogate gradient functions (spike_grad parameter)
-
-2. Testing Scope:
-   - Uses fixed timesteps (5)
-   - Uses fixed channel counts (1 or 4)
-   - Uses fixed batch sizes (1 or 2)
-   - Uses fixed beta value (0.9)
-   - Tests only forward pass, not backward pass or gradient flow
-
-3. Input Patterns:
-   - Uses simple ascending sequence inputs normalized to [0,1]
-   - Does not test with random or complex input patterns
+- Chunking (smoke test) with gradients enabled for gradient accumulation
 """
 
 
@@ -227,15 +211,12 @@ def test_multi_beta_forward(
 
 
 def test_chunking_with_gd():
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+
     batch_size = 256
     chunk_size = 64
     channels = 32
     timesteps = 4096
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-
-    beta = torch.full((channels,), 0.9).to(device)
-    lif = StateLeaky(beta=beta, channels=channels, learn_beta=False).to(device)
-    linear = torch.nn.Linear(channels, channels, bias=False).to(device)
 
     input_tensor = (
         torch.arange(
@@ -246,10 +227,13 @@ def test_chunking_with_gd():
         )
         .view(batch_size, channels, timesteps)
         .contiguous()
-        .permute(2, 0, 1)   # (T, B, C)
+        .permute(2, 0, 1)  # (T, B, C)
     )
-    
-    # 1. Get ground truth with no chunking
+    linear = torch.nn.Linear(channels, channels, bias=False).to(device)
+    beta = torch.full((channels,), 0.9).to(device)
+    lif = StateLeaky(beta=beta, channels=channels, learn_beta=False).to(device)
+
+    # 1. Get ground truth with no chunking to setup comparison
     torch.set_grad_enabled(True)
     linear.zero_grad()
 
@@ -262,8 +246,7 @@ def test_chunking_with_gd():
     loss_full.backward()
     grad_full = linear.weight.grad.clone()
 
-    # 2. Get gradients with chunking
-    torch.set_grad_enabled(True)
+    # 2. Get gradients with chunking to compare
     linear.zero_grad()
 
     spk_chunks = []
@@ -274,7 +257,7 @@ def test_chunking_with_gd():
         # select a chunk of the input tensor
         input_chunk = input_tensor[:, b_start:b_end, :]
 
-        # # forward pass on chunk
+        # forward pass on chunk
         chunk_input_projected = linear(input_chunk)
         spk_chunk, _ = lif(chunk_input_projected)
 
@@ -283,23 +266,25 @@ def test_chunking_with_gd():
         # backward pass on chunk
         loss_chunk = spk_chunk.sum()
         loss_chunk.backward()
-    
-    # resemble chunks into a single tensor
+
+        # assert grad is populated
+        assert linear.weight.grad is not None, "Gradient is not populated."
+
+    # concatenate chunks into a single tensor
     spk_chunked = torch.cat(spk_chunks, dim=1)
     grad_chunked = linear.weight.grad.clone()
 
     # assertions
-    assert spk_full.shape == spk_chunked.shape, "Chunked spike tensor shape mismatch."
+    assert (
+        spk_full.shape == spk_chunked.shape
+    ), "Chunked spike tensor shape mismatch."
     assert torch.allclose(
-        spk_full, 
-        spk_chunked,
-        atol=1e-6
+        spk_full, spk_chunked, atol=1e-6
     ), "Forward pass (spikes) do not match."
     assert torch.allclose(
-        grad_full, 
-        grad_chunked,
-        atol=1e-6
+        grad_full, grad_chunked, atol=1e-6
     ), "Backward pass (gradients) do not match."
+
 
 if __name__ == "__main__":
     pytest.main()
