@@ -28,14 +28,17 @@ print("Device: ", DEVICE)
 
 
 def initialize_wandb():
-    wandb.init(project="snntorch-ssm", config={
-        "seq_length": SEQ_LENGTH,
-        "hidden_dim": HIDDEN_DIM,
-        "lr": LR,
-        "epochs": EPOCHS,
-        "batch_size": BATCH_SIZE,
-        "learn_beta": LEARN_BETA,
-    })
+    wandb.init(
+        project="snntorch-ssm",
+        config={
+            "seq_length": SEQ_LENGTH,
+            "hidden_dim": HIDDEN_DIM,
+            "lr": LR,
+            "epochs": EPOCHS,
+            "batch_size": BATCH_SIZE,
+            "learn_beta": LEARN_BETA,
+        },
+    )
 
 
 # Load TinyStories dataset from Hugging Face
@@ -43,8 +46,12 @@ dataset = load_dataset("roneneldan/TinyStories", split="train")
 
 
 # Tokenizer
-tokenizer = AutoTokenizer.from_pretrained("gpt2")  # Use GPT-2 tokenizer for simplicity
-tokenizer.pad_token = tokenizer.eos_token  # Use the end-of-sequence token as padding
+tokenizer = AutoTokenizer.from_pretrained(
+    "gpt2"
+)  # Use GPT-2 tokenizer for simplicity
+tokenizer.pad_token = (
+    tokenizer.eos_token
+)  # Use the end-of-sequence token as padding
 
 print("initialized tokenizer")
 
@@ -52,7 +59,12 @@ VOCAB_SIZE = tokenizer.vocab_size
 
 
 def tokenize_fn(example):
-    tokens = tokenizer(example["text"], truncation=True, max_length=SEQ_LENGTH, padding="max_length")
+    tokens = tokenizer(
+        example["text"],
+        truncation=True,
+        max_length=SEQ_LENGTH,
+        padding="max_length",
+    )
     return {"input_ids": tokens["input_ids"]}
 
 
@@ -68,14 +80,23 @@ class SNNLanguageModel(nn.Module):
     def __init__(self, vocab_size, hidden_dim):
         super(SNNLanguageModel, self).__init__()
         self.fc1 = nn.Linear(vocab_size, hidden_dim)
-        self.lif1 = StateLeaky(beta=torch.tensor([0.9]).to(
-            DEVICE), learn_decay_filter=False, channels=hidden_dim, learn_beta=LEARN_BETA)
+        self.lif1 = StateLeaky(
+            beta=torch.tensor([0.9]).to(DEVICE),
+            channels=hidden_dim,
+            learn_beta=LEARN_BETA,
+        )
         self.fc2 = nn.Linear(hidden_dim, hidden_dim)
-        self.lif2 = StateLeaky(beta=torch.tensor([0.9]).to(
-            DEVICE), learn_decay_filter=False, channels=hidden_dim, learn_beta=LEARN_BETA)
+        self.lif2 = StateLeaky(
+            beta=torch.tensor([0.9]).to(DEVICE),
+            channels=hidden_dim,
+            learn_beta=LEARN_BETA,
+        )
         self.fc3 = nn.Linear(hidden_dim, hidden_dim)
-        self.lif3 = StateLeaky(beta=torch.tensor([0.9]).to(
-            DEVICE), learn_decay_filter=False, channels=hidden_dim, learn_beta=LEARN_BETA)
+        self.lif3 = StateLeaky(
+            beta=torch.tensor([0.9]).to(DEVICE),
+            channels=hidden_dim,
+            learn_beta=LEARN_BETA,
+        )
         self.fc4 = nn.Linear(hidden_dim, vocab_size)
 
     def forward(self, x):
@@ -150,7 +171,9 @@ for epoch in range(EPOCHS):
         # assert y.shape == (SEQ_LENGTH-1, BATCH_SIZE, VOCAB_SIZE)
 
         y = y.argmax(dim=-1)
-        loss = criterion(output.reshape(-1, VOCAB_SIZE), y.reshape(-1))  # Compute loss
+        loss = criterion(
+            output.reshape(-1, VOCAB_SIZE), y.reshape(-1)
+        )  # Compute loss
         wandb.log({"loss": loss.item()})
 
         loss.backward()
