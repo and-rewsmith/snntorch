@@ -81,7 +81,7 @@ dataloader = DataLoader(tokenized_dataset, batch_size=BATCH_SIZE, shuffle=True)
 class SNNLanguageModel(nn.Module):
     def __init__(self, vocab_size, hidden_dim):
         super(SNNLanguageModel, self).__init__()
-        self.fc1 = nn.Linear(vocab_size, hidden_dim)
+        self.embedding = nn.Embedding(vocab_size, hidden_dim)
         self.lif1 = StateLeaky(
             beta=torch.tensor([0.9]).to(DEVICE),
             channels=hidden_dim,
@@ -102,11 +102,8 @@ class SNNLanguageModel(nn.Module):
         self.fc4 = nn.Linear(hidden_dim, vocab_size)
 
     def forward(self, x):
-        x = x.reshape(-1, x.shape[-1])
-
-        # input transformation
-        hidden = self.fc1(x)
-        hidden = hidden.reshape(SEQ_LENGTH - 1, -1, hidden.shape[-1])
+        # x: [SEQ_LENGTH-1, B] token IDs (torch.long)
+        hidden = self.embedding(x)  # [SEQ_LENGTH-1, B, hidden_dim]
         hidden, _ = self.lif1(hidden)
         hidden = hidden.reshape(-1, hidden.shape[-1])
 
@@ -164,15 +161,11 @@ for epoch in range(EPOCHS):
         )  # [S-1, 1]
         y_mask = t <= first_idx_y.unsqueeze(0)  # [S-1, B]
 
-        # process batch: one hot / teacher forcing setup / permute to (seq_length, batch, vocab_size)
-        x = F.one_hot(x_ids, num_classes=VOCAB_SIZE).float()
-        y = x[:, 1:]  # Target: next token in the sequence
-        x = x[:, :-1]  # Input: all but the last token
-        x = x.permute(1, 0, 2)
-        y = y.permute(1, 0, 2)
-
-        # prepare labels once to save memory
-        y_labels = y.argmax(dim=-1)  # [SEQ_LENGTH-1, B]
+        # process batch: token IDs / teacher forcing setup / permute to (seq_length, batch)
+        x_tok = x_ids[:, :-1]  # Input token IDs: all but the last token
+        y_tok = x_ids[:, 1:]  # Target token IDs: next token in the sequence
+        x = x_tok.permute(1, 0)  # [SEQ_LENGTH-1, B]
+        y_labels = y_tok.permute(1, 0)  # [SEQ_LENGTH-1, B]
 
         optimizer.zero_grad()
 
@@ -186,7 +179,7 @@ for epoch in range(EPOCHS):
         for b_start in range(0, B_total, CHUNKED_BATCH_SIZE):
             b_end = min(b_start + CHUNKED_BATCH_SIZE, B_total)
 
-            x_chunk = x[:, b_start:b_end, :]
+            x_chunk = x[:, b_start:b_end]
             y_chunk_labels = y_labels[:, b_start:b_end]
 
             output_chunk = model(x_chunk)
@@ -201,7 +194,7 @@ for epoch in range(EPOCHS):
                 seq_translate = torch.argmax(output_chunk[:, 0, :], dim=-1)
                 assert seq_translate.shape[0] == SEQ_LENGTH - 1
                 with open(filename, "a") as f:
-                    f.write(tokenizer.decode(seq_translate))
+                    f.write(tokenizer.decode(seq_translate.tolist()))
                     f.write("\n")
                 have_already_decoded_this_batch = True
 
