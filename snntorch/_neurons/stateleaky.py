@@ -31,13 +31,7 @@ def causal_conv1d(input_tensor, kernel_tensor):
 
 
 class StateLeaky(LIF):
-    """
-        TODO: write some docstring similar to SNN.Leaky
-
-         Jason wrote:
-    -      beta = (1 - delta_t / tau), can probably set delta_t to "1"
-    -      if tau > delta_t, then beta: (0, 1)
-    """
+    """StateLeaky neuron model."""
 
     def __init__(
         self,
