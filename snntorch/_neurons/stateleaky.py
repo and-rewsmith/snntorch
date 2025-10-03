@@ -100,7 +100,7 @@ class StateLeaky(LIF):
         assert time_steps.shape == (1, 1, num_steps)
 
         # single channel case
-        if self.tau.shape == ():
+        if self.tau.shape == () or self.tau.shape == (1,):
             # tau is scalar, broadcast across channels
             tau = self.tau.to(device)
             decay_filter = torch.exp(-time_steps / tau).expand(
