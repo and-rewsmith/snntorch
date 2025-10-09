@@ -147,6 +147,7 @@ def TBPTT(
         utils.is_lapicque: snn.Lapicque,
         utils.is_leaky: snn.Leaky,
         utils.is_linearleaky: snn.LinearLeaky,
+        utils.is_stateleaky: snn.StateLeaky,
         utils.is_synaptic: snn.Synaptic,
         utils.is_alpha: snn.Alpha,
         utils.is_rleaky: snn.RLeaky,
