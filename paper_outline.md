@@ -11,6 +11,8 @@
 - **Results:** Gen1 yields large speedups vs Leaky with manageable memory tradeoffs; **Gen2 scales better than StateLeaky at long seqlens** and wins decisively on **NTM Associative Recall**.
 
 - **Takeaway:** snnTorch now supports a Gen1→Gen2 SSM pathway that enables long-context SNN training and introduces associative-memory sequence models in a spiking setting.
+Comment A.: Should we quantify "large speedups" in abstract? e.g., "10-100x at T=1024”?
+Comment A.: Consider mentioning neuromorphic deployment angle earlier?
 
 ### 1. Intro
 
@@ -29,6 +31,8 @@
     
 - If we remove/relax the temporal nonlinearity during training, we can parallelize.
     
+Comment A.: This is the central trick, make sure to highlight the training vs inference distinction
+clearly
 
 **1.3 Contributions (bullets)**
 
@@ -43,13 +47,19 @@
 
 **1.4 Paper roadmap**
 
-- “Sec 2 reviews background and introduces taxonomy; Sec 3 derives Gen1; Sec 4 benchmarks and snnTorch integration; Sec 5 Gen2 extension; Sec 6 discussion.”
+- “Sec 2 reviews background and introduces taxonomy; Sec 3 derives Gen1; Sec 4 benchmarks and snnTorch integration; Sec 5 Gen2 extension; Sec 6 discussion.” 
+
+Comment A.: Related Work?
 
 ###  2. Background
 
 **2.1 SNN vs RNN recurrence (brief)**
 
 - Contrast dense hidden mixing vs elementwise decay + spike reset.
+
+TODO A.: Write brief contrast between dense hidden mixing vs elementwise decay + spike reset
+Comment A.: Include equation forms side-by-side? GRU/LSTM vs Leaky/LIF
+Comment A.: Emphasize sparsity potential here to set up neuromorphic angle
 
 **2.2 SSM framing**
 
@@ -70,6 +80,10 @@
 4. **General associative scans** (most general; needs custom kernels, clashes with eager PyTorch).
 
 {FIGURE: Four parallelization strategy table}
+
+Comment A.: Add computational complexity analysis? O(T) vs O(log T) vs O(1) per-timestep
+FIGURE PLACEHOLDER A.: Four parallelization strategy comparison table showing complexity,
+hardware fit, PyTorch compatibility
 
 **2.4 Mapping to SSM “generations”**
 
