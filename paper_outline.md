@@ -109,6 +109,8 @@
 
 {FIGURE: 6 panel memory / inference-time utilization}
 
+{FIGURE: tinystories performance figures}
+
 **4.1 Experimental setup**
 
 - GPU, shapes, seqlens, batch sizes; Leaky vs StateLeaky.
@@ -123,13 +125,13 @@
 
 - show memory recovery ~1 OOM by chunking batch; minimal time cost.
     
-**4.5 Application stress test (TinyStories)**
+**4.3 Application stress test (TinyStories)**
 
 - frame as sequence-modeling sanity check, not “we trained an LLM.”
     
 - plot perplexity vs steps and vs wall-clock; StateLeaky advantage over time.
     
-**4.6 Ablation: learnable β**
+**4.4 Ablation: learnable β**
 
 - fixed vs single learnable vs per-channel learnable β.
     
@@ -230,9 +232,9 @@
 
 **7.4 Roadmap**
 
-- Sparse Gen2 via top-k + scalar decay accumulator.
+- Sparse spiking Gen2 via top-k + scalar decay accumulator.
     
-- Potential Gen3 path via torch.compile/Triton/scan kernels.
+- Potential spiking Gen3 path via torch.compile/Triton/scan kernels.
 
 ### 8. Conclusion
 
