@@ -83,8 +83,6 @@
     
 - This paper focuses on Gen1 and Gen2 implementations to capture the concrete value of extending snntorch.
 
-{FIGURE: generations × parallelization method × snnTorch feasibility}
-
 ### 3. Gen1
 
 **3.1 Starting recurrence (Leaky/LIF)**
@@ -186,8 +184,7 @@
     
 - Perplexity vs batches + vs wall-clock.
     
-- Emphasize: faster convergence, less LR sensitivity; compare post-convergence perplexity.
-    
+- Emphasize: faster convergence, less LR sensitivity; compare perplexity trends; (state that we are doing a fair tuned comparison).
 
 {FIGURE: TinyStories Gen2 vs StateLeaky perplexity plots}
 
@@ -201,7 +198,7 @@
 
 {FIGURE: Associative Recall accuracy/loss scaling curves}
 
-**6.4 Minimal ablations tied to narrative (may cut this section)**
+**[CUT. NOT BEING INCLUDED] 6.4 Minimal ablations tied to narrative**
 
 - Spike placement ablation: spike-on-S vs spike-post-q (perf + neuromorphic potential).
     
@@ -219,13 +216,13 @@
 
 **7.2 What Gen2 adds beyond Gen1**
 
-- Associative / content-addressable memory in spiking SSMs.
-    
 - Better asymptotic scaling than Gen1 in practice.
+
+- Associative / content-addressable memory in spiking SSMs.
 
 **7.3 Limitations**
 
-- Reset-free linearization during training.
+- Reset-free linearization during training. Although reference that tinystories time-matched figure shows that nonlinearities outside of time can make up for this lack of nonlinearity through seqlen, so it is a minimal limitation.
     
 - Dense internal Gen2 ops currently diminish neuromorphic edge.
     
@@ -239,7 +236,7 @@
 
 ### 8. Conclusion
 
-- One tight recap:
+- Recap:
     
     - taxonomy + feasibility map,
         
