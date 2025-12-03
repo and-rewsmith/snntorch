@@ -54,7 +54,7 @@ class AssociativeLeaky(SpikingNeuron):
         in_dim,
         d_value,
         d_key,
-        num_spiking_neurons=None,
+        num_spiking_neurons,
         use_q_projection: bool = True,
         input_topk: int | None = None,
         key_topk: int | None = None,
@@ -64,9 +64,17 @@ class AssociativeLeaky(SpikingNeuron):
         """
         Base initializer where you specify d_value and d_key directly.
 
-        The spirit of this implementation is to implement an associative-memory
-        based SSM-based SNN, where the projection after the matrix-value hidden
-        state (S_t), projects to the same dimensionality as (S_t).
+        This implements an associative-memory, SSM-based spiking model in which
+        the projection computed from the matrix-valued hidden state S_t maps
+        back into the same dimensionality as S_t.
+
+        Note on return semantics:
+        - Unlike Leaky and StateLeaky, we do not return a (spike, membrane) tuple
+          when output=True. AssociativeLeaky operates on the matrix state S_t and
+          an optional readout projection; materializing and returning both
+          representations is ambiguous (different spaces/shapes depending on
+          use_q_projection) and unnecessarily expensive. Therefore, forward
+          returns a single tensor in the chosen output space.
 
         Args:
             in_dim:               input feature dimension
@@ -76,19 +84,7 @@ class AssociativeLeaky(SpikingNeuron):
                                    If provided, must equal d_value * d_key.
             use_q_projection:     if True, use S_t @ Q_t readout;
                                    if False, return flattened S_t (no q)
-            input_topk:           if set, keep only top-k entries of input x along
-                                   its feature dimension per (t, b). Others are zeroed.
-                                   Must satisfy 1 <= input_topk < in_dim.
-            key_topk:             if set, keep only top-k entries of k_t along the
-                                   key dimension per (t, b). Others are zeroed.
-                                   Must satisfy 1 <= key_topk < d_key.
-            input_topk_tau:       temperature (>0) for the input soft surrogate
-                                   used in training for straight-through estimation.
-            key_topk_tau:         temperature (>0) for the k soft surrogate used in
-                                   training for straight-through estimation.
         """
-        super().__init__(output=True)
-
         _validate_inputs(
             d_value,
             d_key,
@@ -99,6 +95,8 @@ class AssociativeLeaky(SpikingNeuron):
             key_topk_tau,
             in_dim,
         )
+
+        super().__init__(output=True)
 
         self.d_value = d_value  # d
         self.d_key = d_key  # n
