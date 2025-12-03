@@ -27,10 +27,10 @@ from snntorch._neurons.stateleaky import StateLeaky
 SWEEP_CONFIGS = [
     (64, 256),
 ]
-N_RUNS = 10
+N_RUNS = 5
 
 # Same timestep schedule as baseline
-TIMESTEPS = np.logspace(1, 4, num=10, dtype=int)
+TIMESTEPS = np.logspace(1, 3.5, num=10, dtype=int)
 BATCHWISE_CHUNK_SIZE = 64
 
 

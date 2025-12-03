@@ -215,6 +215,66 @@ class StateLeaky(LIF):
         else:
             self.register_buffer("tau", tau)
 
+    def _base_state_function_fft(self, input_):
+        # input_: (T, B, C)
+        num_steps, batch, channels = input_.shape
+        x = input_.permute(1, 2, 0)  # (B, C, T)
+        device = x.device
+
+        # --- choose kernel length (may be truncated) ---
+        if self.kernel_truncation_steps is None:
+            K = num_steps
+        else:
+            K = min(self.kernel_truncation_steps, num_steps)
+
+        # build causal exponential kernel h[t] = exp(-t / tau), t = 0..K-1
+        t = torch.arange(K, device=device).view(1, 1, K)  # (1,1,K)
+
+        if self.tau.shape == () or self.tau.shape == (1,):
+            # scalar tau -> shared across channels
+            tau = self.tau.to(device)
+            h = torch.exp(-t / tau).expand(channels, 1, K)  # (C,1,K)
+        else:
+            # per-channel tau: (C,) -> (C,1,1) -> broadcast over K
+            tau = self.tau.to(device).view(channels, 1, 1)
+            h = torch.exp(-t / tau)  # (C,1,K)
+
+        # depthwise, so each channel has its own kernel
+        # we want a *causal* conv: output[t] depends on x[:t+1]
+        # FFT-based 1D conv per channel along last dim
+        B, C, T = x.shape
+        assert C == channels
+
+        # length for FFT: T + K - 1, round up to power of 2 for speed
+        L = T + K - 1
+        N = 1 << (L - 1).bit_length()  # next_pow2(L)
+
+        # pad input and kernel to length N along time axis
+        # x_pad: (B, C, N)
+        x_pad = torch.zeros(B, C, N, device=device, dtype=x.dtype)
+        x_pad[..., :T] = x
+
+        # h_pad: (C, N)  (no batch dim; will broadcast over B)
+        h_pad = torch.zeros(C, N, device=device, dtype=x.dtype)
+        h_pad[..., :K] = h.squeeze(1)  # (C, K) -> (C, N)
+
+        # FFT along time
+        X_f = torch.fft.rfft(x_pad, n=N, dim=-1)  # (B, C, N//2+1)
+        H_f = torch.fft.rfft(h_pad, n=N, dim=-1)  # (C, N//2+1)
+
+        # broadcast H_f over batch: (B, C, N//2+1)
+        Y_f = X_f * H_f.unsqueeze(0)
+
+        # inverse FFT
+        y_pad = torch.fft.irfft(Y_f, n=N, dim=-1)  # (B, C, N)
+
+        # causal slice: “full” conv result is length L = T+K-1,
+        # we want the last T positions that correspond to time 0..T-1
+        # for a causal kernel starting at t=0, those are indices [K-1 : K-1+T]
+        y = y_pad[..., K - 1 : K - 1 + T]  # (B, C, T)
+
+        return y.permute(2, 0, 1)  # (T, B, C)
+
     def _base_state_function(self, input_):
         num_steps, batch, channels = input_.shape
         input_ = input_.permute(1, 2, 0)
@@ -262,7 +322,7 @@ class StateLeaky(LIF):
         return (self.tau - 1) / self.tau
 
     def forward(self, input_):
-        mem = self._base_state_function(input_)
+        mem = self._base_state_function_fft(input_)
 
         if self.state_quant:
             mem = self.state_quant(mem)

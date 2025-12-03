@@ -27,10 +27,11 @@ from snntorch._neurons.associative import AssociativeLeaky
 SWEEP_CONFIGS = [
     (64, 256),
 ]
-N_RUNS = 10
+N_RUNS = 1
 
 # Same timestep schedule as baseline
-TIMESTEPS = np.logspace(1, 4, num=10, dtype=int)
+# TIMESTEPS = np.logspace(1, 4, num=10, dtype=int)
+TIMESTEPS = np.logspace(1, 4, num=10, dtype=int)[-2:]
 BATCHWISE_CHUNK_SIZE = 64
 
 
@@ -194,6 +195,8 @@ def bench_stateleaky(
         for b_start in range(0, batch_size, BATCHWISE_CHUNK_SIZE):
             chunks_processed += 1
 
+            # with torch.autograd.profiler.profile(use_cuda=True) as prof:
+
             # chunked forward
             # will materialize in the output view
             b_end = min(b_start + BATCHWISE_CHUNK_SIZE, batch_size)
@@ -204,13 +207,20 @@ def bench_stateleaky(
             # forward
             # stride doesn't seem to matter
             spk_chunk, _ = forward_wrapper(z_chunk)
-            assert spk_chunk.shape == (num_steps, b_end - b_start, channels)
+            assert spk_chunk.shape == (
+                num_steps,
+                b_end - b_start,
+                channels,
+            )
 
             # backwards w/ grad accum
             if train:
                 chunk_loss = spk_chunk.sum()
                 chunk_loss.backward()
                 del chunk_loss
+
+            # print(prof.key_averages().table(sort_by="cuda_time_total"))
+            # prof.export_chrome_trace("a100_conv_trace.json")
 
         # zero grads
         if train:
