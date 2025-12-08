@@ -25,7 +25,7 @@ from snntorch._neurons.associative import AssociativeLeaky
 
 # Sweep configurations: (batch_size, channels)
 SWEEP_CONFIGS = [
-    (64, 128),
+    (64, 121),
 ]
 N_RUNS = 10
 
