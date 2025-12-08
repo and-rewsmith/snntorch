@@ -1,136 +1,42 @@
 from warnings import warn
-
 import torch
 from torch import nn
 from torch.nn import functional as F
-import torch
-from torch.autograd import Function
-from torch.nn import functional as F
-
 from .neurons import LIF
 
 
-def causal_conv1d(input_tensor, kernel_tensor):
-    _batch_size, in_channels, _num_steps = input_tensor.shape
-    # kernel_tensor: (channels, 1, kernel_size)
-    _out_channels, _, kernel_size = kernel_tensor.shape
+# ---------------------------------------------------------------------------
+#  Fast causal depthwise convolution implemented using Conv2d with MANUAL padding
+# ---------------------------------------------------------------------------
 
-    # for causal convolution, output at time t only depends on inputs up to t
-    # therefore, we pad only on the left side
-    padding = kernel_size - 1
-    padded_input = F.pad(input_tensor, (padding, 0))
+def causal_conv2d(input_tensor, kernel_tensor):
+    """
+    input_tensor:  (B, C, T)
+    kernel_tensor: (C, 1, K)
+    returns:       (B, C, T)
+    """
+    B, C, T = input_tensor.shape
+    _, _, K = kernel_tensor.shape
 
-    # kernel is flipped to turn cross-correlation performed by F.conv1d into convolution
-    flipped_kernel = torch.flip(kernel_tensor, dims=[-1])
+    # Manual causal pad on time dimension (left-only)
+    x = F.pad(input_tensor.unsqueeze(2), (K - 1, 0, 0, 0))  # (B, C, 1, T + K - 1)
 
-    # perform convolution with the padded input (output length = num_steps length)
-    causal_conv_result = F.conv1d(
-        padded_input, flipped_kernel, groups=in_channels
-    )
+    # Flip kernel for convolution (Conv2d performs cross-correlation by default)
+    w = torch.flip(kernel_tensor, dims=[-1]).unsqueeze(2)  # (C, 1, 1, K)
 
-    return causal_conv_result
+    # Depthwise Conv2d
+    out = F.conv2d(x, w, groups=C)  # (B, C, 1, T)
+    return out.squeeze(2)  # (B, C, T)
 
+
+# ---------------------------------------------------------------------------
+#  StateLeaky neuron (Conv2d-accelerated LIF)
+# ---------------------------------------------------------------------------
 
 class StateLeaky(LIF):
-    r"""
-    First-order state-only leaky neuron model that uses a causal exponential
-    decay kernel to generate the membrane potential over time via depthwise
-    causal convolution. Unlike :class:`Leaky`, no stepwise recurrent reset is
-    applied inside the state update; spikes (if requested) are emitted by
-    thresholding the resulting state.
-
-    The effective per-channel decay filter is
-
-    .. math::
-
-        h[t] = e^{-t/\tau}, \quad t = 0, 1, \ldots
-
-    Optionally, the decay kernel can be truncated to a finite memory window
-    via ``kernel_truncation_steps``. When set to an integer ``K > 0``, only the
-    most recent ``K`` taps contribute to each output time step (older
-    contributions are dropped). Output sequence length is unchanged.
-
-    Example::
-
-        import torch
-        from snntorch._neurons.stateleaky import StateLeaky
-
-        T, B, C = 16, 2, 4
-        x = torch.randn(T, B, C)
-        lif = StateLeaky(beta=0.9, channels=C, output=True, kernel_truncation_steps=8)
-        spk, mem = lif(x)
-
-    :param beta: membrane potential decay rate. May be a single-valued tensor
-        (shared across channels) or multi-valued of shape ``(channels,)``.
-        Internally represented via :math:`\tau = 1/(1-\beta)`.
-    :type beta: float or torch.tensor
-
-    :param channels: Number of channels processed depthwise. Must match the
-        input's channel dimension.
-    :type channels: int
-
-    :param threshold: Threshold used to generate spikes when ``output=True``.
-        Defaults to 1.0
-    :type threshold: float, optional
-
-    :param spike_grad: Surrogate gradient for the term dS/dU when spikes are
-        produced. Defaults to None (corresponds to ATan surrogate gradient. See
-        ``snntorch.surrogate`` for more options)
-    :type spike_grad: surrogate gradient function from snntorch.surrogate,
-        optional
-
-    :param surrogate_disable: Disables surrogate gradients regardless of
-        ``spike_grad`` argument. Useful for ONNX compatibility. Defaults to
-        False
-    :type surrogate_disable: bool, Optional
-
-    :param learn_beta: Option to enable learnable beta (via ``tau``).
-        Defaults to False
-    :type learn_beta: bool, optional
-
-    :param learn_threshold: Option to enable learnable threshold. Defaults to
-        False
-    :type learn_threshold: bool, optional
-
-    :param state_quant: If specified, hidden state :math:`mem` is quantized to
-        a valid state for the forward pass. Defaults to False
-    :type state_quant: quantization function from snntorch.quant, optional
-
-    :param output: If ``True``, returns states (and spikes) when the neuron is
-        called. If ``False``, returns membrane only. Defaults to True
-    :type output: bool, optional
-
-    :param graded_spikes_factor: Output spikes are scaled by this value, if
-        specified. Defaults to 1.0
-    :type graded_spikes_factor: float or torch.tensor
-
-    :param learn_graded_spikes_factor: Option to enable learnable graded
-        spikes. Defaults to False
-    :type learn_graded_spikes_factor: bool, optional
-
-    :param kernel_truncation_steps: If set to integer ``K > 0``, keeps the ``K``
-        most recent taps of the exponential kernel per output time step, and
-        discards older contributions. If ``None``, uses the full time window.
-        Defaults to None
-    :type kernel_truncation_steps: int or None, optional
-
-    Inputs: \input_
-        - **input_** of shape ``(T, B, C)``: time-major input tensor
-
-    Outputs: spk, mem
-        - If ``output=True``:
-            - **spk** of shape ``(T, B, C)``: output spikes
-            - **mem** of shape ``(T, B, C)``: membrane potential
-        - If ``output=False``:
-            - **mem** of shape ``(T, B, C)``: membrane potential
-
-    Learnable Parameters:
-        - **StateLeaky.beta** (via ``tau``) - optional learnable per-channel
-          parameter when ``learn_beta=True``
-        - **StateLeaky.threshold** - optional learnable threshold when
-          ``learn_threshold=True``
-        - **StateLeaky.graded_spikes_factor** - optional learnable scaling when
-          ``learn_graded_spikes_factor=True``
+    """
+    Drop-in replacement for LIF that uses a Conv2d-based causal convolution
+    for faster state computation while preserving surrogate-gradient behavior.
     """
 
     def __init__(
@@ -148,6 +54,7 @@ class StateLeaky(LIF):
         learn_graded_spikes_factor=False,
         kernel_truncation_steps=None,
     ):
+        # Let LIF handle beta/tau/threshold/spike_grad/etc.
         super().__init__(
             beta=beta,
             threshold=threshold,
@@ -161,7 +68,9 @@ class StateLeaky(LIF):
             learn_graded_spikes_factor=learn_graded_spikes_factor,
         )
 
-        # warn on non-applicable-but-harmless settings when spikes are disabled
+        self.channels = channels
+        self.kernel_truncation_steps = kernel_truncation_steps
+
         if not output:
             if (
                 spike_grad is not None
@@ -182,94 +91,58 @@ class StateLeaky(LIF):
                     UserWarning,
                 )
 
-        self.kernel_truncation_steps = kernel_truncation_steps
-
-        self._tau_buffer(self.beta, learn_beta, channels)
-
-    def fire_inhibition(self, batch_size, mem):
-        raise NotImplementedError(
-            "StateLeaky does not support inhibition; use standard Leaky for inhibition paths."
-        )
-
-    def mem_reset(self, mem):
-        raise NotImplementedError(
-            "StateLeaky does not maintain stepwise resets; mem_reset is not applicable."
-        )
-
-    def _tau_buffer(self, beta, learn_beta, channels):
-        if not isinstance(beta, torch.Tensor):
-            beta = torch.as_tensor(beta)
-
-        if (
-            beta.shape != (channels,)
-            and beta.shape != ()
-            and beta.shape != (1,)
-        ):
-            raise ValueError(
-                f"Beta shape {beta.shape} must be either ({channels},) or (1,)"
-            )
-
-        tau = 1 / (1 - beta + 1e-12)
-        if learn_beta:
-            self.tau = nn.Parameter(tau)
-        else:
-            self.register_buffer("tau", tau)
-
+    # ----------------------------------------------------------------------
+    # Core state computation (Conv2d version)
+    # ----------------------------------------------------------------------
     def _base_state_function(self, input_):
-        num_steps, batch, channels = input_.shape
-        input_ = input_.permute(1, 2, 0)
-        assert input_.shape == (batch, channels, num_steps)
-        device = input_.device
+        """
+        input_: (T, B, C)
+        returns mem: (T, B, C)
+        """
+        T, B, C = input_.shape
 
-        # determine kernel size (may be truncated)
+        # (T, B, C) -> (B, C, T)
+        x = input_.permute(1, 2, 0)
+        device = x.device
+
+        # kernel length
         if self.kernel_truncation_steps is None:
-            kernel_size = num_steps
+            K = T
         else:
-            kernel_size = min(self.kernel_truncation_steps, num_steps)
+            K = min(self.kernel_truncation_steps, T)
 
-        # time axis shape (1, 1, kernel_size)
-        time_steps = torch.arange(kernel_size, device=device).view(
-            1, 1, kernel_size
-        )
-        assert time_steps.shape == (1, 1, kernel_size)
+        # time indices
+        t_idx = torch.arange(K, device=device).view(1, 1, K)
 
-        # single channel case
-        if self.tau.shape == () or self.tau.shape == (1,):
-            # tau is scalar, broadcast across channels
-            tau = self.tau.to(device)
-            decay_filter = torch.exp(-time_steps / tau).expand(
-                channels, 1, kernel_size
-            )
+        # Get beta (possibly learnable) and compute tau
+        beta = self.beta.to(device)
+        if beta.shape in [(), (1,)]:
+            tau = 1.0 / (1.0 - beta + 1e-12)
+            decay_filter = torch.exp(-t_idx / tau).expand(C, 1, K)
         else:
-            # tau is (channels,), reshape to (channels, 1, 1) so it broadcasts correctly
-            tau = self.tau.to(device).view(channels, 1, 1)
-            assert tau.shape == (channels, 1, 1)
-            decay_filter = torch.exp(
-                -time_steps / tau
-            )  # directly (channels, 1, kernel_size)
+            tau = 1.0 / (1.0 - beta + 1e-12)
+            tau = tau.view(C, 1, 1)
+            decay_filter = torch.exp(-t_idx / tau)
 
-        assert decay_filter.shape == (channels, 1, kernel_size)
-        assert input_.shape == (batch, channels, num_steps)
+        # causal depthwise conv2d
+        conv_out = causal_conv2d(x, decay_filter)  # (B, C, T)
+        return conv_out.permute(2, 0, 1)  # (T, B, C)
 
-        # depthwise convolution: each channel gets its own decay filter
-        conv_result = causal_conv1d(input_, decay_filter)
-        assert conv_result.shape == (batch, channels, num_steps)
-
-        return conv_result.permute(2, 0, 1)  # (num_steps, batch, channels)
-
-    @property
-    def beta(self):
-        return (self.tau - 1) / self.tau
-
+    # ----------------------------------------------------------------------
+    # Forward pass (inherits surrogate-gradient spikes from LIF)
+    # ----------------------------------------------------------------------
     def forward(self, input_):
+        # Compute membrane state with Conv2d causal kernel
         mem = self._base_state_function(input_)
 
+        # Optional quantization
         if self.state_quant:
             mem = self.state_quant(mem)
 
-        if self.output:
-            self.spk = self.fire(mem) * self.graded_spikes_factor
-            return self.spk, mem
-
-        else:
+        # If no spikes requested, just return membrane trace
+        if not self.output:
             return mem
+
+        # Use LIF's surrogate spike logic
+        spk = self.fire(mem) * self.graded_spikes_factor
+        return spk, mem
