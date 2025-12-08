@@ -3,6 +3,8 @@ import argparse
 import re
 import math
 import numpy as np
+import subprocess
+from typing import List
 
 import torch
 import torch.nn as nn
@@ -31,7 +33,25 @@ EPOCHS = 10000
 BATCH_SIZE = 64
 CHUNKED_BATCH_SIZE = 16
 LEARN_BETA = True
-DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+def get_least_busy_gpu() -> int:
+    """Return the index of the GPU with the least memory usage."""
+    try:
+        result: str = subprocess.check_output(
+            [
+                "nvidia-smi",
+                "--query-gpu=memory.used",
+                "--format=csv,nounits,noheader",
+            ],
+            encoding="utf-8",
+        )
+        memory_used: List[int] = [int(x) for x in result.strip().split("\n")]
+        if memory_used:
+            return memory_used.index(min(memory_used))
+        return 0
+    except (subprocess.SubprocessError, FileNotFoundError):
+        print("nvidia-smi failed or isn't available, defaulting to GPU 0")
+        return 0
+DEVICE = f"cuda:{get_least_busy_gpu()}" if torch.cuda.is_available() else "cpu"
 DECODE_EVERY_N_BATCHES = 50
 print("Device: ", DEVICE)
 
