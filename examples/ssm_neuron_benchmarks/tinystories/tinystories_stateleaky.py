@@ -54,7 +54,7 @@ def get_least_busy_gpu() -> int:
         return 0
 
 
-DEVICE = f"cuda:{get_least_busy_gpu()}" if torch.cuda.is_available() else "cpu"
+DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 DECODE_EVERY_N_BATCHES = 50
 print("Device: ", DEVICE)
 
@@ -307,17 +307,18 @@ for epoch in range(EPOCHS):
                 reduction="sum",
             )
             total_loss_sum += float(loss_sum_chunk.item())
-            # Vectorized per-sample mean loss within this chunk
-            per_token_loss = F.cross_entropy(
-                output_chunk.reshape(-1, VOCAB_SIZE),
-                y_chunk_labels.reshape(-1),
-                reduction="none",
-            ).reshape(output_chunk.shape[0], output_chunk.shape[1])  # [T,Bc]
-            mask_chunk = y_mask[:, b_start:b_end].bool()  # [T,Bc]
-            valid_counts = mask_chunk.sum(dim=0).clamp_min(1)  # [Bc]
-            loss_sum_per_sample = (per_token_loss * mask_chunk).sum(dim=0)  # [Bc]
-            mean_loss_per_sample = loss_sum_per_sample / valid_counts  # [Bc]
-            mean_loss_samples.append(mean_loss_per_sample)
+            # Vectorized per-sample mean loss within this chunk (no grad, CPU)
+            with torch.no_grad():
+                per_token_loss = F.cross_entropy(
+                    output_chunk.detach().reshape(-1, VOCAB_SIZE),
+                    y_chunk_labels.reshape(-1),
+                    reduction="none",
+                ).reshape(output_chunk.shape[0], output_chunk.shape[1])  # [T,Bc]
+                mask_chunk = y_mask[:, b_start:b_end].bool()  # [T,Bc]
+                valid_counts = mask_chunk.sum(dim=0).clamp_min(1)  # [Bc]
+                loss_sum_per_sample = (per_token_loss * mask_chunk).sum(dim=0)  # [Bc]
+                mean_loss_per_sample = loss_sum_per_sample / valid_counts  # [Bc]
+                mean_loss_samples.append(mean_loss_per_sample.cpu())
             if total_valid_tokens > 0:
                 (loss_sum_chunk / float(total_valid_tokens)).backward()
 
@@ -325,8 +326,8 @@ for epoch in range(EPOCHS):
         # finite perplexity: clip loss to avoid overflow but never use inf
         ppl = math.exp(min(total_loss_mean, 20.0))
         # Per-batch error bars across sample-level perplexities (aggregated across chunks)
-        mean_loss_all = torch.cat(mean_loss_samples, dim=0)  # [B]
-        mean_loss_np = mean_loss_all.detach().cpu().numpy()
+        mean_loss_all = torch.cat(mean_loss_samples, dim=0)  # [B] on CPU
+        mean_loss_np = mean_loss_all.numpy()
         # finite per-sample perplexities: clip losses instead of using inf
         ppl_samples_np = np.exp(np.clip(mean_loss_np, None, 20.0))
         ppl_std = float(np.std(ppl_samples_np))

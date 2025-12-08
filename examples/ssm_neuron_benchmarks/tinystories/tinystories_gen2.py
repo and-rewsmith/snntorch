@@ -55,7 +55,7 @@ def get_least_busy_gpu() -> int:
         return 0
 
 
-DEVICE = f"cuda:{get_least_busy_gpu()}" if torch.cuda.is_available() else "cpu"
+DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 DECODE_EVERY_N_BATCHES = 50
 INPUT_TOPK_TAU = 2.0
 KEY_TOPK_TAU = 2.0
@@ -344,17 +344,17 @@ for epoch in range(EPOCHS):
             flat_logits = output_chunk.reshape(-1, VOCAB_SIZE)
             flat_targets = y_chunk_labels.reshape(-1)
             flat_mask = y_mask[:, b_start:b_end].reshape(-1).bool()
-            num_valid_chunk = int(flat_mask.sum().item())
-            if num_valid_chunk > 0:
-                loss_sum_chunk = F.cross_entropy(
-                    flat_logits[flat_mask],
-                    flat_targets[flat_mask],
-                    reduction="sum",
-                )
-                total_loss_sum += float(loss_sum_chunk.item())
-                # sample-level mean loss within this chunk (vectorized)
+            # Assume valid chunk and compute losses/stats directly
+            loss_sum_chunk = F.cross_entropy(
+                flat_logits[flat_mask],
+                flat_targets[flat_mask],
+                reduction="sum",
+            )
+            total_loss_sum += float(loss_sum_chunk.item())
+            # sample-level mean loss within this chunk (vectorized, no grad, CPU)
+            with torch.no_grad():
                 per_token_loss = F.cross_entropy(
-                    output_chunk.reshape(-1, VOCAB_SIZE),
+                    output_chunk.detach().reshape(-1, VOCAB_SIZE),
                     y_chunk_labels.reshape(-1),
                     reduction="none",
                 ).reshape(output_chunk.shape[0], output_chunk.shape[1])  # [T,Bc]
@@ -362,19 +362,17 @@ for epoch in range(EPOCHS):
                 valid_counts = mask_chunk.sum(dim=0).clamp_min(1)  # [Bc]
                 loss_sum_per_sample = (per_token_loss * mask_chunk).sum(dim=0)  # [Bc]
                 mean_loss_per_sample = loss_sum_per_sample / valid_counts  # [Bc]
-                mean_loss_samples.append(mean_loss_per_sample)
-                if total_valid_tokens > 0:
-                    (loss_sum_chunk / float(total_valid_tokens)).backward()
-            else:
-                raise ValueError("No valid tokens in chunk")
+                mean_loss_samples.append(mean_loss_per_sample.cpu())
+            if total_valid_tokens > 0:
+                (loss_sum_chunk / float(total_valid_tokens)).backward()
 
         total_loss_mean = total_loss_sum / float(total_valid_tokens)
         # finite perplexity: clip loss to avoid overflow but never use inf
         ppl = math.exp(min(total_loss_mean, 20.0))
         # per-batch error bars across sample-level perplexities (aggregated over chunks, vectorized)
         if len(mean_loss_samples) > 0:
-            mean_loss_all = torch.cat(mean_loss_samples, dim=0)  # [B]
-            mean_loss_np = mean_loss_all.detach().cpu().numpy()
+            mean_loss_all = torch.cat(mean_loss_samples, dim=0)  # [B] on CPU
+            mean_loss_np = mean_loss_all.numpy()
             # finite per-sample perplexities: clip losses instead of using inf
             ppl_samples_np = np.exp(np.clip(mean_loss_np, None, 20.0))
             ppl_std = float(np.std(ppl_samples_np))
