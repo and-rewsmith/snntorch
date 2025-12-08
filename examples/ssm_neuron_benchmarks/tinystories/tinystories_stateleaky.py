@@ -1,5 +1,8 @@
 from datetime import datetime
+import argparse
+import re
 import math
+import numpy as np
 
 import torch
 import torch.nn as nn
@@ -59,8 +62,35 @@ torch.manual_seed(1337)
 if torch.cuda.is_available():
     torch.cuda.manual_seed_all(1337)
 
+def _decimal_float(value_str: str) -> float:
+    if not re.fullmatch(r"[0-9]*\.[0-9]+", value_str):
+        raise argparse.ArgumentTypeError(
+            f"Invalid --lr '{value_str}'. Use decimal notation like 0.0005 (no scientific notation)."
+        )
+    val = float(value_str)
+    if val <= 0.0:
+        raise argparse.ArgumentTypeError("--lr must be > 0.")
+    return val
 
-def initialize_wandb():
+def parse_args():
+    parser = argparse.ArgumentParser(description="TinyStories StateLeaky training.")
+    parser.add_argument(
+        "--lr",
+        type=_decimal_float,
+        required=False,
+        help="Learning rate in decimal notation (e.g., 0.0005). No scientific notation.",
+    )
+    parser.add_argument(
+        "--name",
+        type=str,
+        required=False,
+        help="Optional wandb run name.",
+    )
+    return parser.parse_args()
+
+ARGS = parse_args()
+
+def initialize_wandb(run_name=None):
     wandb.init(
         project="snntorch-ssm",
         config={
@@ -72,6 +102,7 @@ def initialize_wandb():
             "learn_beta": LEARN_BETA,
             "variant": "StateLeaky",
         },
+        name=run_name,
     )
 
 
@@ -174,8 +205,10 @@ class SNNLanguageModel(nn.Module):
         output = output.reshape(T, -1, output.shape[-1])
         return output
 
-
-initialize_wandb()
+# Apply optional LR override before wandb init so config reflects it
+if ARGS.lr is not None:
+    LR = ARGS.lr
+initialize_wandb(run_name=ARGS.name)
 
 # Initialize model, loss, and optimizer
 model = SNNLanguageModel(VOCAB_SIZE, HIDDEN_DIM).to(DEVICE)
@@ -185,6 +218,7 @@ criterion = nn.CrossEntropyLoss()
 optimizer = optim.AdamW(model.parameters(), lr=LR)
 
 # Training Loop
+global_step = 0
 for epoch in range(EPOCHS):
     model.train()
     train_loss = 0
@@ -225,6 +259,7 @@ for epoch in range(EPOCHS):
         decode_this_batch = batch_num % DECODE_EVERY_N_BATCHES == 0
         have_already_decoded_this_batch = False
         total_loss_sum = 0.0
+        mean_loss_samples = []
 
         for b_start in range(0, B_total, CHUNKED_BATCH_SIZE):
             b_end = min(b_start + CHUNKED_BATCH_SIZE, B_total)
@@ -273,6 +308,17 @@ for epoch in range(EPOCHS):
                     reduction="sum",
                 )
                 total_loss_sum += float(loss_sum_chunk.item())
+                # Vectorized per-sample mean loss within this chunk
+                per_token_loss = F.cross_entropy(
+                    output_chunk.reshape(-1, VOCAB_SIZE),
+                    y_chunk_labels.reshape(-1),
+                    reduction="none",
+                ).reshape(output_chunk.shape[0], output_chunk.shape[1])  # [T,Bc]
+                mask_chunk = y_mask[:, b_start:b_end].bool()  # [T,Bc]
+                valid_counts = mask_chunk.sum(dim=0).clamp_min(1)  # [Bc]
+                loss_sum_per_sample = (per_token_loss * mask_chunk).sum(dim=0)  # [Bc]
+                mean_loss_per_sample = loss_sum_per_sample / valid_counts  # [Bc]
+                mean_loss_samples.append(mean_loss_per_sample)
                 if total_valid_tokens > 0:
                     (loss_sum_chunk / float(total_valid_tokens)).backward()
             else:
@@ -282,7 +328,28 @@ for epoch in range(EPOCHS):
         ppl = (
             math.exp(total_loss_mean) if total_loss_mean < 20 else float("inf")
         )
-        wandb.log({"loss": total_loss_mean, "ppl": ppl})
+        # Per-batch error bars across sample-level perplexities (aggregated across chunks)
+        if len(mean_loss_samples) > 0:
+            mean_loss_all = torch.cat(mean_loss_samples, dim=0)  # [B]
+            mean_loss_np = mean_loss_all.detach().cpu().numpy()
+            ppl_samples_np = np.where(mean_loss_np < 20.0, np.exp(mean_loss_np), np.inf)
+            ppl_std = float(np.std(ppl_samples_np))
+            ppl_min = float(np.min(ppl_samples_np))
+            ppl_max = float(np.max(ppl_samples_np))
+        else:
+            ppl_std, ppl_min, ppl_max = 0.0, float("inf"), float("-inf")
+        global_step += 1
+        wandb.log(
+            {
+                "loss": total_loss_mean,
+                "ppl": ppl,
+                "ppl_std": ppl_std,
+                "ppl_min": ppl_min,
+                "ppl_max": ppl_max,
+                "step": global_step,
+                "epoch": epoch + 1,
+            }
+        )
         torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
         optimizer.step()
 
