@@ -9,6 +9,7 @@ from transformers import AutoTokenizer
 from tqdm import tqdm
 import torch.nn.functional as F
 import math
+import numpy as np
 import wandb
 
 from snntorch._neurons.leaky import Leaky
@@ -26,7 +27,7 @@ HIDDEN_DIM = 512
 LR = 1e-3
 EPOCHS = 10000
 BATCH_SIZE = 64
-CHUNKED_BATCH_SIZE = 8
+CHUNKED_BATCH_SIZE = 16
 LEARN_BETA = True
 DEVICE = "cuda:1" if torch.cuda.is_available() else "cpu"
 DECODE_EVERY_N_BATCHES = 50
@@ -152,6 +153,7 @@ optimizer = optim.AdamW(model.parameters(), lr=LR)
 
 
 # Training Loop
+global_step = 0
 for epoch in range(EPOCHS):
     model.train()
     train_loss = 0
@@ -191,6 +193,7 @@ for epoch in range(EPOCHS):
         decode_this_batch = batch_num % DECODE_EVERY_N_BATCHES == 0
         have_already_decoded_this_batch = False
         total_loss_sum = 0.0
+        mean_loss_samples = []
 
         for b_start in range(0, B_total, CHUNKED_BATCH_SIZE):
             b_end = min(b_start + CHUNKED_BATCH_SIZE, B_total)
@@ -231,24 +234,49 @@ for epoch in range(EPOCHS):
             flat_logits = output_chunk.reshape(-1, VOCAB_SIZE)
             flat_targets = y_chunk_labels.reshape(-1)
             flat_mask = y_mask[:, b_start:b_end].reshape(-1).bool()
-            num_valid_chunk = int(flat_mask.sum().item())
-            if num_valid_chunk > 0:
-                loss_sum_chunk = F.cross_entropy(
-                    flat_logits[flat_mask],
-                    flat_targets[flat_mask],
-                    reduction="sum",
-                )
-                total_loss_sum += float(loss_sum_chunk.item())
-                if total_valid_tokens > 0:
-                    (loss_sum_chunk / float(total_valid_tokens)).backward()
-            else:
-                raise ValueError("No valid tokens in chunk")
+            # Assume valid chunk and compute losses/stats directly
+            loss_sum_chunk = F.cross_entropy(
+                flat_logits[flat_mask],
+                flat_targets[flat_mask],
+                reduction="sum",
+            )
+            total_loss_sum += float(loss_sum_chunk.item())
+            # Vectorized per-sample mean loss within this chunk
+            per_token_loss = F.cross_entropy(
+                output_chunk.reshape(-1, VOCAB_SIZE),
+                y_chunk_labels.reshape(-1),
+                reduction="none",
+            ).reshape(output_chunk.shape[0], output_chunk.shape[1])  # [T,Bc]
+            mask_chunk = y_mask[:, b_start:b_end].bool()  # [T,Bc]
+            valid_counts = mask_chunk.sum(dim=0).clamp_min(1)  # [Bc]
+            loss_sum_per_sample = (per_token_loss * mask_chunk).sum(dim=0)  # [Bc]
+            mean_loss_per_sample = loss_sum_per_sample / valid_counts  # [Bc]
+            mean_loss_samples.append(mean_loss_per_sample)
+            if total_valid_tokens > 0:
+                (loss_sum_chunk / float(total_valid_tokens)).backward()
 
         total_loss_mean = total_loss_sum / float(total_valid_tokens)
-        ppl = (
-            math.exp(total_loss_mean) if total_loss_mean < 20 else float("inf")
+        # finite perplexity: clip loss to avoid overflow but never use inf
+        ppl = math.exp(min(total_loss_mean, 20.0))
+        # Per-batch error bars across sample-level perplexities (aggregated across chunks)
+        mean_loss_all = torch.cat(mean_loss_samples, dim=0)  # [B]
+        mean_loss_np = mean_loss_all.detach().cpu().numpy()
+        ppl_samples_np = np.exp(np.clip(mean_loss_np, None, 20.0))
+        ppl_std = float(np.std(ppl_samples_np))
+        ppl_min = float(np.min(ppl_samples_np))
+        ppl_max = float(np.max(ppl_samples_np))
+        global_step += 1
+        wandb.log(
+            {
+                "loss": total_loss_mean,
+                "ppl": ppl,
+                "ppl_std": ppl_std,
+                "ppl_min": ppl_min,
+                "ppl_max": ppl_max,
+                "step": global_step,
+                "epoch": epoch + 1,
+            }
         )
-        wandb.log({"loss": total_loss_mean, "ppl": ppl})
         torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
         optimizer.step()
 

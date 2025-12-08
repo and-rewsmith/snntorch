@@ -30,7 +30,7 @@ HIDDEN_DIM = 256
 LR = 1e-3
 EPOCHS = 10000
 BATCH_SIZE = 64
-CHUNKED_BATCH_SIZE = 8
+CHUNKED_BATCH_SIZE = 16
 LEARN_BETA = True
 
 
@@ -300,44 +300,38 @@ for epoch in range(EPOCHS):
             flat_logits = output_chunk.reshape(-1, VOCAB_SIZE)
             flat_targets = y_chunk_labels.reshape(-1)
             flat_mask = y_mask[:, b_start:b_end].reshape(-1).bool()
-            num_valid_chunk = int(flat_mask.sum().item())
-            if num_valid_chunk > 0:
-                loss_sum_chunk = F.cross_entropy(
-                    flat_logits[flat_mask],
-                    flat_targets[flat_mask],
-                    reduction="sum",
-                )
-                total_loss_sum += float(loss_sum_chunk.item())
-                # Vectorized per-sample mean loss within this chunk
-                per_token_loss = F.cross_entropy(
-                    output_chunk.reshape(-1, VOCAB_SIZE),
-                    y_chunk_labels.reshape(-1),
-                    reduction="none",
-                ).reshape(output_chunk.shape[0], output_chunk.shape[1])  # [T,Bc]
-                mask_chunk = y_mask[:, b_start:b_end].bool()  # [T,Bc]
-                valid_counts = mask_chunk.sum(dim=0).clamp_min(1)  # [Bc]
-                loss_sum_per_sample = (per_token_loss * mask_chunk).sum(dim=0)  # [Bc]
-                mean_loss_per_sample = loss_sum_per_sample / valid_counts  # [Bc]
-                mean_loss_samples.append(mean_loss_per_sample)
-                if total_valid_tokens > 0:
-                    (loss_sum_chunk / float(total_valid_tokens)).backward()
-            else:
-                raise ValueError("No valid tokens in chunk")
+            # Assume valid chunk and compute losses/stats directly
+            loss_sum_chunk = F.cross_entropy(
+                flat_logits[flat_mask],
+                flat_targets[flat_mask],
+                reduction="sum",
+            )
+            total_loss_sum += float(loss_sum_chunk.item())
+            # Vectorized per-sample mean loss within this chunk
+            per_token_loss = F.cross_entropy(
+                output_chunk.reshape(-1, VOCAB_SIZE),
+                y_chunk_labels.reshape(-1),
+                reduction="none",
+            ).reshape(output_chunk.shape[0], output_chunk.shape[1])  # [T,Bc]
+            mask_chunk = y_mask[:, b_start:b_end].bool()  # [T,Bc]
+            valid_counts = mask_chunk.sum(dim=0).clamp_min(1)  # [Bc]
+            loss_sum_per_sample = (per_token_loss * mask_chunk).sum(dim=0)  # [Bc]
+            mean_loss_per_sample = loss_sum_per_sample / valid_counts  # [Bc]
+            mean_loss_samples.append(mean_loss_per_sample)
+            if total_valid_tokens > 0:
+                (loss_sum_chunk / float(total_valid_tokens)).backward()
 
         total_loss_mean = total_loss_sum / float(total_valid_tokens)
-        ppl = (
-            math.exp(total_loss_mean) if total_loss_mean < 20 else float("inf")
-        )
+        # finite perplexity: clip loss to avoid overflow but never use inf
+        ppl = math.exp(min(total_loss_mean, 20.0))
         # Per-batch error bars across sample-level perplexities (aggregated across chunks)
-        if len(mean_loss_samples) > 0:
-            mean_loss_all = torch.cat(mean_loss_samples, dim=0)  # [B]
-            mean_loss_np = mean_loss_all.detach().cpu().numpy()
-            ppl_samples_np = np.where(mean_loss_np < 20.0, np.exp(mean_loss_np), np.inf)
-            ppl_std = float(np.std(ppl_samples_np))
-            ppl_min = float(np.min(ppl_samples_np))
-            ppl_max = float(np.max(ppl_samples_np))
-        else:
-            ppl_std, ppl_min, ppl_max = 0.0, float("inf"), float("-inf")
+        mean_loss_all = torch.cat(mean_loss_samples, dim=0)  # [B]
+        mean_loss_np = mean_loss_all.detach().cpu().numpy()
+        # finite per-sample perplexities: clip losses instead of using inf
+        ppl_samples_np = np.exp(np.clip(mean_loss_np, None, 20.0))
+        ppl_std = float(np.std(ppl_samples_np))
+        ppl_min = float(np.min(ppl_samples_np))
+        ppl_max = float(np.max(ppl_samples_np))
         global_step += 1
         wandb.log(
             {

@@ -32,7 +32,7 @@ HIDDEN_DIM = 256
 LR = 5e-4
 EPOCHS = 10000
 BATCH_SIZE = 64
-CHUNKED_BATCH_SIZE = 32
+CHUNKED_BATCH_SIZE = 16
 
 
 def get_least_busy_gpu() -> int:
@@ -369,19 +369,19 @@ for epoch in range(EPOCHS):
                 raise ValueError("No valid tokens in chunk")
 
         total_loss_mean = total_loss_sum / float(total_valid_tokens)
-        ppl = (
-            math.exp(total_loss_mean) if total_loss_mean < 20 else float("inf")
-        )
+        # finite perplexity: clip loss to avoid overflow but never use inf
+        ppl = math.exp(min(total_loss_mean, 20.0))
         # per-batch error bars across sample-level perplexities (aggregated over chunks, vectorized)
         if len(mean_loss_samples) > 0:
             mean_loss_all = torch.cat(mean_loss_samples, dim=0)  # [B]
             mean_loss_np = mean_loss_all.detach().cpu().numpy()
-            ppl_samples_np = np.where(mean_loss_np < 20.0, np.exp(mean_loss_np), np.inf)
+            # finite per-sample perplexities: clip losses instead of using inf
+            ppl_samples_np = np.exp(np.clip(mean_loss_np, None, 20.0))
             ppl_std = float(np.std(ppl_samples_np))
             ppl_min = float(np.min(ppl_samples_np))
             ppl_max = float(np.max(ppl_samples_np))
         else:
-            ppl_std, ppl_min, ppl_max = 0.0, float("inf"), float("-inf")
+            ppl_std, ppl_min, ppl_max = 0.0, 0.0, 0.0
         global_step += 1
         wandb.log(
             {
