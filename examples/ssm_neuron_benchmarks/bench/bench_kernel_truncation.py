@@ -22,7 +22,7 @@ from snntorch._neurons.stateleaky import StateLeaky
 
 # Sweep configurations: (batch_size, channels)
 SWEEP_CONFIGS = [
-    (64, 128),
+    (64, 256),
 ]
 N_RUNS = 10
 

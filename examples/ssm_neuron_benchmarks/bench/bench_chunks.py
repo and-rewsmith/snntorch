@@ -23,7 +23,7 @@ from snntorch._neurons.stateleaky import StateLeaky
 
 
 SWEEP_CONFIGS = [
-    (64, 128),
+    (64, 256),
 ]
 N_RUNS = 10
 TIMESTEPS = np.logspace(1, 4, num=10, dtype=int)
