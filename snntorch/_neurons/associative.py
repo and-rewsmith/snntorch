@@ -10,13 +10,11 @@ def _validate_inputs(
     d_value,
     d_key,
     num_spiking_neurons,
-    input_topk,
-    key_topk,
-    input_topk_tau,
-    key_topk_tau,
     in_dim,
 ):
     # dims are positive integers
+    if in_dim <= 0:
+        raise ValueError("in_dim must be a positive integer")
     if d_value <= 0 or d_key <= 0:
         raise ValueError("d_value and d_key must be positive integers")
 
@@ -29,23 +27,7 @@ def _validate_inputs(
             f"num_spiking_neurons={num_spiking_neurons} must equal d_value * d_key={inferred}"
         )
 
-    # topk is in [1, dim]
-    if input_topk is not None:
-        if input_topk <= 0 or input_topk > in_dim:
-            raise ValueError(
-                f"input_topk must be in [1, in_dim={in_dim}] when provided; got {input_topk}"
-            )
-    if key_topk is not None:
-        if key_topk <= 0 or key_topk > d_key:
-            raise ValueError(
-                f"key_topk must be in [1, d_key={d_key}] when provided; got {key_topk}"
-            )
-
-    # tau is positive
-    if input_topk_tau <= 0.0:
-        raise ValueError("input_topk_tau must be > 0")
-    if key_topk_tau <= 0.0:
-        raise ValueError("key_topk_tau must be > 0")
+    return
 
 
 class AssociativeLeaky(SpikingNeuron):
@@ -56,10 +38,6 @@ class AssociativeLeaky(SpikingNeuron):
         d_key,
         num_spiking_neurons,
         use_q_projection: bool = True,
-        input_topk: int | None = None,
-        key_topk: int | None = None,
-        input_topk_tau: float = 1.0,
-        key_topk_tau: float = 1.0,
     ):
         """
         Base initializer where you specify d_value and d_key directly.
@@ -88,10 +66,6 @@ class AssociativeLeaky(SpikingNeuron):
             d_value,
             d_key,
             num_spiking_neurons,
-            input_topk,
-            key_topk,
-            input_topk_tau,
-            key_topk_tau,
             in_dim,
         )
 
@@ -101,10 +75,6 @@ class AssociativeLeaky(SpikingNeuron):
         self.d_key = d_key  # n
         self.num_spiking_neurons = num_spiking_neurons
         self.use_q_projection = use_q_projection
-        self.input_topk = input_topk
-        self.key_topk = key_topk
-        self.input_topk_tau = input_topk_tau
-        self.key_topk_tau = key_topk_tau
 
         self.to_v = nn.Linear(in_dim, d_value)  # (T,B,in_dim) -> (T,B,d)
         self.to_k = nn.Linear(in_dim, d_key)  # (T,B,in_dim) -> (T,B,n)
@@ -127,10 +97,6 @@ class AssociativeLeaky(SpikingNeuron):
         in_dim,
         num_spiking_neurons,
         use_q_projection: bool = True,
-        input_topk: int | None = None,
-        key_topk: int | None = None,
-        input_topk_tau: float = 1.0,
-        key_topk_tau: float = 1.0,
     ):
         """
         Convenience constructor:
@@ -142,12 +108,6 @@ class AssociativeLeaky(SpikingNeuron):
             num_spiking_neurons:  total neurons = d * n, must be a perfect square
             use_q_projection:     if True, use S_t @ Q_t readout;
                                    if False, return flattened S_t
-            input_topk:           if set, keep only top-k entries of input x along
-                                   its feature dimension per (t, b).
-            key_topk:             if set, keep only top-k entries of k_t along the
-                                   key dimension per (t, b).
-            input_topk_tau:       temperature (>0) for input soft surrogate in STE.
-            key_topk_tau:         temperature (>0) for k soft surrogate in STE.
         """
         if num_spiking_neurons <= 0:
             raise ValueError("num_spiking_neurons must be positive")
@@ -167,10 +127,6 @@ class AssociativeLeaky(SpikingNeuron):
             d_key=d_key,
             num_spiking_neurons=num_spiking_neurons,
             use_q_projection=use_q_projection,
-            input_topk=input_topk,
-            key_topk=key_topk,
-            input_topk_tau=input_topk_tau,
-            key_topk_tau=key_topk_tau,
         )
 
     def forward(self, x):
@@ -190,37 +146,10 @@ class AssociativeLeaky(SpikingNeuron):
         d = self.d_value
         n = self.d_key
 
-        # top k on input x
-        if self.input_topk is not None:
-            vals_x, idx_x = torch.topk(x, self.input_topk, dim=-1)
-            x_hard = torch.zeros_like(x).scatter(-1, idx_x, vals_x)
-            if (
-                self.training and False
-            ):  # TODO: once we finish benching topk, enable this
-                # Straight-through: forward = hard, backward = soft surrogate
-                m_soft = torch.softmax(x / self.input_topk_tau, dim=-1)
-                x_soft = x * m_soft
-                x = x_hard.detach() + x_soft - x_soft.detach()
-            else:
-                x = x_hard
-
         # projections
         v = self.to_v(x)  # (T,B,d)
         k = self.to_k(x)  # (T,B,n)
         alpha = torch.sigmoid(self.to_alpha(x))  # (T,B,n)
-
-        # top k on key
-        if self.key_topk is not None:
-            vals, idx = torch.topk(k, self.key_topk, dim=-1)
-            k_hard = torch.zeros_like(k).scatter(-1, idx, vals)
-            if (
-                self.training and False
-            ):  # TODO: once we finish benching topk, enable this
-                m_soft_k = torch.softmax(k / self.key_topk_tau, dim=-1)
-                k_soft = k * m_soft_k
-                k = k_hard.detach() + k_soft - k_soft.detach()
-            else:
-                k = k_hard
 
         # optional q projection
         if self.use_q_projection:
