@@ -68,13 +68,12 @@ class AssociativeLeaky(SpikingNeuron):
         the projection computed from the matrix-valued hidden state S_t maps
         back into the same dimensionality as S_t.
 
-        Note on return semantics:
-        - Unlike Leaky and StateLeaky, we do not return a (spike, membrane) tuple
-          when output=True. AssociativeLeaky operates on the matrix state S_t and
-          an optional readout projection; materializing and returning both
-          representations is ambiguous (different spaces/shapes depending on
-          use_q_projection) and unnecessarily expensive. Therefore, forward
-          returns a single tensor in the chosen output space.
+        Unlike Leaky and StateLeaky, we do not return a (spike, membrane) tuple
+        when output=True. AssociativeLeaky operates on the matrix state S_t and
+        an optional readout projection; materializing and returning both
+        representations is ambiguous (different spaces/shapes depending on
+        use_q_projection) and unnecessarily expensive. Therefore, forward
+        returns a single tensor in the chosen output space.
 
         Args:
             in_dim:               input feature dimension
@@ -107,7 +106,6 @@ class AssociativeLeaky(SpikingNeuron):
         self.input_topk_tau = input_topk_tau
         self.key_topk_tau = key_topk_tau
 
-        # Projections for the Gen-2 update
         self.to_v = nn.Linear(in_dim, d_value)  # (T,B,in_dim) -> (T,B,d)
         self.to_k = nn.Linear(in_dim, d_key)  # (T,B,in_dim) -> (T,B,n)
         self.to_alpha = nn.Linear(in_dim, d_key)  # (T,B,in_dim) -> (T,B,n)
@@ -154,7 +152,7 @@ class AssociativeLeaky(SpikingNeuron):
         if num_spiking_neurons <= 0:
             raise ValueError("num_spiking_neurons must be positive")
 
-        # Ensure it's a perfect square so we can set d = n = sqrt(N)
+        # ensure it's a perfect square so we can set d = n = sqrt(n)
         m = math.isqrt(num_spiking_neurons)
         if m * m != num_spiking_neurons:
             raise ValueError(
@@ -272,23 +270,3 @@ class AssociativeLeaky(SpikingNeuron):
 
         y = Y_block  # (T,B,N_spike)
         return y
-
-
-# TODO: remove this dunder
-if __name__ == "__main__":
-    T, B, in_dim = 16, 2, 32  # time, batch, input dim
-    num_spiking_neurons = 16  # must be a perfect square -> d = n = 4
-
-    model = AssociativeLeaky.from_num_spiking_neurons(
-        in_dim=in_dim,
-        num_spiking_neurons=num_spiking_neurons,
-        use_q_projection=True,  # or False to just flatten S_t
-    )
-
-    x = torch.randn(T, B, in_dim)
-    y = model(x)
-
-    print("x.shape:", x.shape)
-    print(
-        "y.shape:", y.shape
-    )  # expect (T, B, num_spiking_neurons) = (16, 2, 16)
