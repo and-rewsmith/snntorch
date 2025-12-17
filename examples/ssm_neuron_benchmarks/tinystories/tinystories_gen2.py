@@ -28,7 +28,7 @@ with open(filename, "w") as f:
 
 # Hyperparameters
 SEQ_LENGTH = 512
-HIDDEN_DIM = 256
+HIDDEN_DIM = 169
 LR = 5e-4
 EPOCHS = 10000
 BATCH_SIZE = 64
@@ -55,7 +55,7 @@ def get_least_busy_gpu() -> int:
         return 0
 
 
-DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+DEVICE = "cuda:1" if torch.cuda.is_available() else "cpu"
 DECODE_EVERY_N_BATCHES = 50
 INPUT_TOPK_TAU = 2.0
 KEY_TOPK_TAU = 2.0

@@ -31,7 +31,7 @@ LR = 1e-3
 EPOCHS = 10000
 BATCH_SIZE = 64
 CHUNKED_BATCH_SIZE = 16
-LEARN_BETA = True
+LEARN_BETA = False
 
 
 def get_least_busy_gpu() -> int:
@@ -148,22 +148,23 @@ class SNNLanguageModel(nn.Module):
         self.pos_embedding = nn.Embedding(SEQ_LENGTH, hidden_dim)
         # LayerNorms to stabilize inputs to each block and before output
         self.ln1 = nn.LayerNorm(hidden_dim)
+        beta_init = torch.tensor(0.9, device=DEVICE)
         self.lif1 = StateLeaky(
-            beta=torch.full((hidden_dim,), 0.9, device=DEVICE),
+            beta=beta_init.clone(),
             channels=hidden_dim,
             learn_beta=LEARN_BETA,
         )
         self.ln2 = nn.LayerNorm(hidden_dim)
         self.fc2 = nn.Linear(hidden_dim, hidden_dim)
         self.lif2 = StateLeaky(
-            beta=torch.full((hidden_dim,), 0.9, device=DEVICE),
+            beta=beta_init.clone(),
             channels=hidden_dim,
             learn_beta=LEARN_BETA,
         )
         self.ln3 = nn.LayerNorm(hidden_dim)
         self.fc3 = nn.Linear(hidden_dim, hidden_dim)
         self.lif3 = StateLeaky(
-            beta=torch.full((hidden_dim,), 0.9, device=DEVICE),
+            beta=beta_init.clone(),
             channels=hidden_dim,
             learn_beta=LEARN_BETA,
         )

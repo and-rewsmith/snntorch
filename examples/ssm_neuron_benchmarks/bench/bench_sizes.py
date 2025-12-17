@@ -29,14 +29,14 @@ SWEEP_CONFIGS = [
     (32, 128),
     (64, 256),
 ]
-N_RUNS = 10
+N_RUNS = 3
 
 # Same timestep schedule as baseline
 TIMESTEPS = np.logspace(1, 4, num=10, dtype=int)
 BATCHWISE_CHUNK_SIZE = 64
 
 
-device = "cuda:1"
+device = "cuda:0"
 torch.set_grad_enabled(True)
 
 

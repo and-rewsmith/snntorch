@@ -23,7 +23,7 @@ from snntorch._neurons.stateleaky import StateLeaky
 
 
 SWEEP_CONFIGS = [
-    (64, 128),
+    (64, 256),
 ]
 N_RUNS = 10
 TIMESTEPS = np.logspace(1, 4, num=10, dtype=int)
@@ -73,7 +73,7 @@ def bench_leaky(
     spk = torch.zeros(batch_size, channels, device=device)
 
     # warmup
-    lif.forward(linear(input_tensor[:2, :2, :]))
+    lif.forward(linear(input_tensor))
     time.sleep(2)
 
     baseline_mem = get_cur_bytes(device)

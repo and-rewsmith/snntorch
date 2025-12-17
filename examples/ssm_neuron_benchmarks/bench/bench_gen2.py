@@ -25,7 +25,7 @@ from snntorch._neurons.associative import AssociativeLeaky
 
 # Sweep configurations: (batch_size, channels)
 SWEEP_CONFIGS = [
-    (64, 121),
+    (64, 256),
 ]
 N_RUNS = 10
 
@@ -87,7 +87,7 @@ def bench_leaky(
     spk = torch.zeros(batch_size, channels, device=device)
 
     # warmup
-    lif.forward(linear(input_tensor[:2, :2, :]))
+    lif.forward(linear(input_tensor))
     time.sleep(2)
 
     baseline_mem = get_cur_bytes(device)
@@ -271,8 +271,11 @@ def bench_gen2(
         torch.compile(forward_wrapper) if GEN2_USE_COMPILE else forward_wrapper
     )
 
-    # warmup consistent with leaky (run compiled forward before timing)
-    _ = compiled_forward(linear(input_tensor[:2, :2, :]))
+    # warmup: full timesteps, first batch chunk to match timed loop
+    b_start = 0
+    b_end = min(b_start + BATCHWISE_CHUNK_SIZE, batch_size)
+    z_chunk = linear(input_tensor[:, b_start:b_end, :])
+    _ = compiled_forward(z_chunk)
     torch.cuda.synchronize()
     time.sleep(2)
 
